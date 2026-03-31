@@ -29,3 +29,6 @@
 # Obfuscation
 -repackageclasses
 -allowaccessmodification
+
+# Ignore missing annotations
+-dontwarn androidx.annotation.**
