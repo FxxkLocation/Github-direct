@@ -1,0 +1,3085 @@
+{
+    "profiles":  [
+                     {
+                         "id":  "github",
+                         "displayName":  "GitHub 直连",
+                         "category":  "开发工具",
+                         "enabledByDefault":  true,
+                         "priority":  10,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  60,
+                         "notes":  "GitHub 全部域名经 DoH/内置映射解析为真实 IP；核心域名走 vIP + TLS 分片绕过 SNI 封锁",
+                         "cidr":  {
+                                      "v4":  [
+                                                 "20.205.243.0/24",
+                                                 "20.27.177.0/24",
+                                                 "20.248.137.0/24",
+                                                 "20.207.73.0/24",
+                                                 "140.82.112.0/20",
+                                                 "143.55.64.0/20",
+                                                 "185.199.108.0/22",
+                                                 "192.30.252.0/22",
+                                                 "13.107.42.0/24",
+                                                 "13.107.43.0/24",
+                                                 "4.208.26.0/24"
+                                             ],
+                                      "v6":  [
+                                                 "2606:50c0::/32",
+                                                 "2a0a:a440::/32",
+                                                 "2001:4860::/32"
+                                             ]
+                                  },
+                         "testEndpoints":  [
+                                               "https://github.com",
+                                               "https://api.github.com"
+                                           ],
+                         "providers":  [
+                                           {
+                                               "providerId":  "github-hosts",
+                                               "intervalHours":  4,
+                                               "tcpProbePort":  443
+                                           }
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "github.com",
+                                             "match":  {
+                                                           "type":  "EXACT",
+                                                           "value":  "github.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "PROVIDER_FIRST"
+                                         },
+                                         {
+                                             "id":  "api.github.com",
+                                             "match":  {
+                                                           "type":  "EXACT",
+                                                           "value":  "api.github.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "PROVIDER_FIRST"
+                                         },
+                                         {
+                                             "id":  "gist.github.com",
+                                             "match":  {
+                                                           "type":  "EXACT",
+                                                           "value":  "gist.github.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "PROVIDER_FIRST"
+                                         },
+                                         {
+                                             "id":  "codeload.github.com",
+                                             "match":  {
+                                                           "type":  "EXACT",
+                                                           "value":  "codeload.github.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "PROVIDER_FIRST"
+                                         },
+                                         {
+                                             "id":  "alive.github.com",
+                                             "match":  {
+                                                           "type":  "EXACT",
+                                                           "value":  "alive.github.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "PROVIDER_FIRST"
+                                         },
+                                         {
+                                             "id":  "central.github.com",
+                                             "match":  {
+                                                           "type":  "EXACT",
+                                                           "value":  "central.github.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "PROVIDER_FIRST"
+                                         },
+                                         {
+                                             "id":  "github.githubassets.com",
+                                             "match":  {
+                                                           "type":  "EXACT",
+                                                           "value":  "github.githubassets.com"
+                                                       },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "PROVIDER_FIRST"
+                                         },
+                                         {
+                                             "id":  "collector.github.com",
+                                             "match":  {
+                                                           "type":  "EXACT",
+                                                           "value":  "collector.github.com"
+                                                       },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "PROVIDER_FIRST"
+                                         },
+                                         {
+                                             "id":  "copilot-proxy.githubusercontent.com",
+                                             "match":  {
+                                                           "type":  "EXACT",
+                                                           "value":  "copilot-proxy.githubusercontent.com"
+                                                       },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "PROVIDER_FIRST"
+                                         },
+                                         {
+                                             "id":  "github.blog",
+                                             "match":  {
+                                                           "type":  "EXACT",
+                                                           "value":  "github.blog"
+                                                       },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "PROVIDER_FIRST"
+                                         },
+                                         {
+                                             "id":  "suffix.githubusercontent.com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".githubusercontent.com"
+                                                       },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "PROVIDER_FIRST"
+                                         },
+                                         {
+                                             "id":  "suffix.github.io",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".github.io"
+                                                       },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "PROVIDER_FIRST"
+                                         },
+                                         {
+                                             "id":  "suffix.github.com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".github.com"
+                                                       },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "PROVIDER_FIRST"
+                                         },
+                                         {
+                                             "id":  "suffix.githubassets.com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".githubassets.com"
+                                                       },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "PROVIDER_FIRST"
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "youtube",
+                         "displayName":  "YouTube",
+                         "category":  "视频平台",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "NEEDS_VERIFY",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "youtube.com",
+                                               "googlevideo.com"
+                                           ],
+                         "notes":  "DoH 验证 9 域 + 3 子域抽查（2026-08-13，dns.google）：youtube.com/youtu.be/ytimg.com(i,s)/ggpht(lh3)/youtube-nocookie/youtube-3rd-party 均解析，其中 youtube-3rd-party.com apex 无 A 记录且无任何公开资料，剔除（无法独立确认为真实域）。googlevideo.com 按架构 §12.1 用 CLEAN_DNS（不做 gvt1 域重写；直连可达性需 M4 实测，故 NEEDS_VERIFY）。QUIC 三态回退由引擎处理（relay 域 QUIC_FALLBACK_WORKING）。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "youtube-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".youtube.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "youtu-be",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".youtu.be"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "ytimg-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".ytimg.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "ggpht-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".ggpht.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "youtube-nocookie-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".youtube-nocookie.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "googlevideo-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".googlevideo.com"
+                                                       },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  false,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "google-llc",
+                         "displayName":  "Google LLC",
+                         "category":  "搜索引擎/账户生态",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "google.com",
+                                               "gstatic.com"
+                                           ],
+                         "notes":  "DoH 验证 9 域（2026-08-13，dns.google）全部解析（142.251.x 段）。矩阵的正则通配（google|goog）用 9 个 SUFFIX 表达，无功能损失。SNI 伪装 g.cn 无等价（架构 §12.1 Unsupported）：端到端发真实 SNI，Google 对真实 SNI 正常响应，对可达性无影响。googleweblight.com 服务已下线但域名仍解析，保留覆盖历史链接。googlesyndication.com/gstatic.com 与 pixiv 的 NX 广告规则存在跨 profile 重叠，仲裁按 profile id 字典序（google-llc 先于 pixiv），需实现方确认 NX 优先策略。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "google-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".google.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "googleapis-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".googleapis.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "googleusercontent-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".googleusercontent.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "googledrive-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".googledrive.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "googlesyndication-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".googlesyndication.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "googleweblight-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".googleweblight.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "gstatic-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".gstatic.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "gmail-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".gmail.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "android-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".android.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "telegram",
+                         "displayName":  "Telegram",
+                         "category":  "即时通讯（Web 版）",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  86400,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "t.me",
+                                               "telegram.org"
+                                           ],
+                         "notes":  "DoH 验证 6 域 + web.telegram.org/cdn1-cdn-telegram 抽查（2026-08-13）：全部解析到 Telegram 自有 ASN62041（149.154.167.99 等）。WebSearch 交叉确认 t.me/telegram.me/telegram.org/tg.dev/telesco.pe 均为官方域名族；cdn1.cdn-telegram.org CNAME 到 cdn1.telesco.pe（telesco.pe 即 Telegram 媒体 CDN 域）。Web 版 WebSocket 长连接（矩阵潜在未配置项）→ idleTimeout 86400。IPv6-only 上游问题对 relay 域不适用（AAAA 已抑制）；矩阵所述区域分流对直连无意义（真实解析天然就近）。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "telegram-org",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".telegram.org"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "telegram-me",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".telegram.me"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "t-me",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".t.me"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "tg-dev",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".tg.dev"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "telesco-pe",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".telesco.pe"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "cdn-telegram-org",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".cdn-telegram.org"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "discord",
+                         "displayName":  "Discord",
+                         "category":  "即时通讯",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  86400,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "discord.com",
+                                               "discord.gg"
+                                           ],
+                         "notes":  "DoH 验证 4 域 + gateway.discord.gg/media.discordapp.net 抽查（2026-08-13）：discord.com/discord.gg/discordapp.com/discordapp.net 区域全部存在（Cloudflare 162.159.x）；gateway 网关与媒体域均解析。WebSocket 长连接（gateway）→ idleTimeout 86400。语音 UDP 不在覆盖（与参考项目一致，架构 §12.1）。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "discord-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".discord.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "discord-gg",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".discord.gg"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "discordapp-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".discordapp.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "discordapp-net",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".discordapp.net"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "reddit",
+                         "displayName":  "Reddit",
+                         "category":  "论坛社区",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "reddit.com",
+                                               "redgifs.com"
+                                           ],
+                         "notes":  "DoH 验证 5 域 + www.redditstatic.com/styles.redditmedia.com 抽查（2026-08-13）：全部解析（Fastly 151.101.x）。redgifs.com 为固定真实 IP 直连场景：DoH 当前 A=172.64.151.133/104.18.36.123（Cloudflare 边缘，2026-08-13 验证快照），fixedIp=172.64.151.133 + PROVIDER_ONLY；IP 可能轮换，过期后需重新验证（M4）。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "reddit-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".reddit.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "redd-it",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".redd.it"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "redditmedia-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".redditmedia.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "redditstatic-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".redditstatic.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "redgifs-com",
+                                             "match":  {
+                                                           "type":  "EXACT",
+                                                           "value":  "redgifs.com"
+                                                       },
+                                             "transport":  "DIRECT_IP",
+                                             "resolver":  "PROVIDER_ONLY",
+                                             "aaaaSuppress":  true,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  "172.64.151.133"
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "instagram",
+                         "displayName":  "Instagram",
+                         "category":  "社交（图片/短视频）",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "instagram.com",
+                                               "cdninstagram.com"
+                                           ],
+                         "notes":  "DoH 验证 5 域（2026-08-13）：instagram.com/instagr.am/ig.me 解析到 Meta 自有段 157.240.x；cdninstagram.com 与 fna.fbcdn.net 区域存在（apex 无 A 属 CDN 正常），媒体主机名为动态生成（scontent-\u003ccity\u003e-\u003cn\u003e.* 模式，公开 DNS 无法枚举），区域级存在已确认。跳过上游证书验证等反代行为无等价（端到端更强）。fna.fbcdn.net 与 facebook profile 的 .fbcdn.net 重叠，同 transport 无冲突。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "instagram-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".instagram.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "instagr-am",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".instagr.am"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "ig-me",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".ig.me"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "cdninstagram-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".cdninstagram.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "fna-fbcdn-net",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".fna.fbcdn.net"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "facebook",
+                         "displayName":  "Facebook",
+                         "category":  "社交网络",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "facebook.com",
+                                               "fbcdn.net"
+                                           ],
+                         "notes":  "DoH 验证 2 域（2026-08-13）：facebook.com/fbcdn.net 解析到 Meta 自有段 157.240.x。fbcdn.net SUFFIX 覆盖全部媒体 CDN 主机（含 fna.fbcdn.net 等动态主机名，区域存在已确认）。矩阵提及的 business.whatsapp.com 归入 WhatsApp profile，不在此重复。证书跳过类反代行为无等价（端到端更强）。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "facebook-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".facebook.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "fbcdn-net",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".fbcdn.net"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "twitch",
+                         "displayName":  "Twitch",
+                         "category":  "直播平台",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  86400,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "twitch.tv",
+                                               "gql.twitch.tv"
+                                           ],
+                         "notes":  "DoH 验证 8 域 + static-cdn.jtvnw.net 抽查（2026-08-13）：twitch.tv/gql/irc-ws.chat/passport/assets/panels 全部解析（Fastly/AWS/CloudFront 混合），ttvnw.net/jtvnw.net 区域存在（视频拉流域，主机名为动态 video-edge-* 模式）。IRC WebSocket（irc-ws.chat.twitch.tv，由 .twitch.tv 后缀覆盖）长连接 → idleTimeout 86400。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "twitch-tv",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".twitch.tv"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "ttvnw-net",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".ttvnw.net"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "jtvnw-net",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".jtvnw.net"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "wikimedia",
+                         "displayName":  "Wikimedia Foundation",
+                         "category":  "维基百科及姊妹项目",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "wikipedia.org",
+                                               "upload.wikimedia.org"
+                                           ],
+                         "notes":  "DoH 验证 12 个 TLD 家族 + upload.wikimedia.org 抽查（2026-08-13）：全部解析到 Wikimedia 自有 AS（198.35.26.x）。upload.wikimedia.org 由 .wikimedia.org 后缀覆盖。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "wikipedia-org",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".wikipedia.org"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "wikimedia-org",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".wikimedia.org"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "wikivoyage-org",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".wikivoyage.org"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "wiktionary-org",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".wiktionary.org"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "wikibooks-org",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".wikibooks.org"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "wikinews-org",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".wikinews.org"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "wikidata-org",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".wikidata.org"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "wikiversity-org",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".wikiversity.org"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "wikiquote-org",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".wikiquote.org"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "mediawiki-org",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".mediawiki.org"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "wikisource-org",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".wikisource.org"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "wikifunctions-org",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".wikifunctions.org"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "steam-community",
+                         "displayName":  "Steam Community",
+                         "category":  "游戏社区",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "steamcommunity.com"
+                                           ],
+                         "notes":  "DoH 验证 1 域（2026-08-13）：steamcommunity.com 解析到 Akamai 段 184.85.x。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "steamcommunity-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".steamcommunity.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "steam-store",
+                         "displayName":  "Steam Store",
+                         "category":  "游戏商店",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "store.steampowered.com",
+                                               "steamstatic.com"
+                                           ],
+                         "notes":  "DoH 验证 2 域 + store/cdn.akamai.steamstatic.com 抽查（2026-08-13）：steampowered.com 解析到 Akamai 段；steamstatic.com 区域存在，cdn/community.akamai.steamstatic.com 均解析（商店/社区图片 CDN，由 .steamstatic.com 后缀覆盖）。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "steampowered-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".steampowered.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "steamstatic-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".steamstatic.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "dropbox",
+                         "displayName":  "Dropbox",
+                         "category":  "网盘",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  86400,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "dropbox.com",
+                                               "dl.dropboxusercontent.com"
+                                           ],
+                         "notes":  "DoH 验证 2 域 + dl/previews.dropboxusercontent.com 抽查（2026-08-13）：全部解析到 Dropbox 自有段 162.125.x（www.dropboxusercontent.com 为 NXDOMAIN，但实际使用的 dl/previews 均有效，后缀规则覆盖）。WebSocket 订阅路径（/2/notify/subscribe 等）由 TCP relay 端到端透传，idleTimeout 86400。CORS/CSP 响应头改写为反代专属行为，无 MITM 不可等价（架构 §12.1 Unsupported），不影响直连可达性。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "dropbox-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".dropbox.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "dropboxusercontent-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".dropboxusercontent.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "mega",
+                         "displayName":  "MEGA",
+                         "category":  "加密网盘",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "mega.nz",
+                                               "mega.io"
+                                           ],
+                         "notes":  "DoH 验证 3 个 TLD（2026-08-13）：mega.io/mega.nz/mega.co.nz（api.mega.co.nz 由 .mega.co.nz 覆盖）全部解析到 MEGA 自有段（66.203.x/31.216.x）。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "mega-io",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".mega.io"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "mega-nz",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".mega.nz"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "mega-co-nz",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".mega.co.nz"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "onedrive-live",
+                         "displayName":  "OneDrive Live",
+                         "category":  "微软网盘 Web 入口",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "onedrive.live.com"
+                                           ],
+                         "notes":  "DoH 验证 2 域（2026-08-13）：onedrive.live.com 解析到 Microsoft 段（13.107.139.11），1drv.ms（短链域）解析到 150.171.22.11。已知缺口：实际文件内容传输走 *.sharepoint.com / *.1drv.ms 深层 API，sharepoint.com 为多租户域不适合整体入库，文件传输可能绕过本规则（矩阵已注明，覆盖不完整）。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "onedrive-live-com",
+                                             "match":  {
+                                                           "type":  "EXACT",
+                                                           "value":  "onedrive.live.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "onedrv-ms",
+                                             "match":  {
+                                                           "type":  "EXACT",
+                                                           "value":  "1drv.ms"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "e-hentai",
+                         "displayName":  "E-Hentai",
+                         "category":  "漫画/图库社区",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "e-hentai.org",
+                                               "exhentai.org"
+                                           ],
+                         "notes":  "DoH 验证 6 域（2026-08-13）：e-hentai.org/exhentai.org（Cloudflare 段）、ehgt.org（图片 CDN，自有段）、hentaiverse.org/ehwiki.org/ehtracker.org（矩阵中被注释的家族，DoH 确认全部在线）均解析。上传大小/超时限制端到端无代理天然无限制（优于参考，架构 §12.1 Full）。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "e-hentai-org",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".e-hentai.org"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "exhentai-org",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".exhentai.org"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "ehgt-org",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".ehgt.org"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "hentaiverse-org",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".hentaiverse.org"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "ehwiki-org",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".ehwiki.org"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "ehtracker-org",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".ehtracker.org"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "nyaa",
+                         "displayName":  "Nyaa",
+                         "category":  "种子索引站",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "nyaa.si"
+                                           ],
+                         "notes":  "DoH 验证 2 域（2026-08-13）：nyaa.si 与 sukebei.nyaa.si 均解析（186.2.163.20 / 198.251.89.38），sukebei 由 .nyaa.si 后缀覆盖。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "nyaa-si",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".nyaa.si"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "pixiv",
+                         "displayName":  "Pixiv",
+                         "category":  "插画创作社区",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  false,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "pixiv.net",
+                                               "pximg.net"
+                                           ],
+                         "notes":  "DoH 验证 4 域（2026-08-13）：pixiv.net/pximg.net/pixiv.org 解析到 pixiv 自有段 210.140.x（注意：当前 DNS 显示 pixiv 已不在 Cloudflare，矩阵 Status=3 分类依据 ECH 时代，CLEAN_DNS 直连策略仍适用且更优——日本自有 AS 直连延迟低）；pixon.ads-pixiv.net 经 WebSearch 确认为 pixiv Inc. 官方广告平台（pixiv Ads，GCP 托管，2026-08-13）。NX 屏蔽 4 个已独立确认为广告/分析域的名单（矩阵称 6 个，其中 2 个无法独立确认身份未入库）：pixon.ads-pixiv.net/pagead2.googlesyndication.com/googletagmanager.com/ads.twitter.com。跨 profile 仲裁注意：pagead2/googletagmanager 命中 google-llc 的 suffix，需要 NX 优先或提升优先级。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "pixiv-net",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".pixiv.net"
+                                                       },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "pximg-net",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".pximg.net"
+                                                       },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "pixiv-org",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".pixiv.org"
+                                                       },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "nx-pixon-ads-pixiv",
+                                             "match":  {
+                                                           "type":  "EXACT",
+                                                           "value":  "pixon.ads-pixiv.net"
+                                                       },
+                                             "transport":  "NXDOMAIN",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "nx-pagead2",
+                                             "match":  {
+                                                           "type":  "EXACT",
+                                                           "value":  "pagead2.googlesyndication.com"
+                                                       },
+                                             "transport":  "NXDOMAIN",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "nx-googletagmanager",
+                                             "match":  {
+                                                           "type":  "EXACT",
+                                                           "value":  "googletagmanager.com"
+                                                       },
+                                             "transport":  "NXDOMAIN",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "nx-ads-twitter",
+                                             "match":  {
+                                                           "type":  "EXACT",
+                                                           "value":  "ads.twitter.com"
+                                                       },
+                                             "transport":  "NXDOMAIN",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "pixiv-fanbox",
+                         "displayName":  "pixivFANBOX",
+                         "category":  "创作者订阅平台",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  false,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "fanbox.cc"
+                                           ],
+                         "notes":  "DoH 验证 1 域（2026-08-13）：fanbox.cc 解析到 Cloudflare 段（104.18/172.64），CLEAN_DNS 直连（矩阵 Status=3）。与 Pixiv 共用同一组 4 个 NX 广告屏蔽规则（见 pixiv profile notes）。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "fanbox-cc",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".fanbox.cc"
+                                                       },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "nx-pixon-ads-pixiv",
+                                             "match":  {
+                                                           "type":  "EXACT",
+                                                           "value":  "pixon.ads-pixiv.net"
+                                                       },
+                                             "transport":  "NXDOMAIN",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "nx-pagead2",
+                                             "match":  {
+                                                           "type":  "EXACT",
+                                                           "value":  "pagead2.googlesyndication.com"
+                                                       },
+                                             "transport":  "NXDOMAIN",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "nx-googletagmanager",
+                                             "match":  {
+                                                           "type":  "EXACT",
+                                                           "value":  "googletagmanager.com"
+                                                       },
+                                             "transport":  "NXDOMAIN",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "nx-ads-twitter",
+                                             "match":  {
+                                                           "type":  "EXACT",
+                                                           "value":  "ads.twitter.com"
+                                                       },
+                                             "transport":  "NXDOMAIN",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "dailymotion",
+                         "displayName":  "Dailymotion",
+                         "category":  "视频平台",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "dailymotion.com",
+                                               "graphql.api.dailymotion.com"
+                                           ],
+                         "notes":  "DoH 验证 5 域（2026-08-13）：dailymotion.com（195.8.215.136）、graphql.api.dailymotion.com（CloudFront）、geo.dailymotion.com/geo.player.dailymotion.com/dmads.dailymotion.com 全部解析，均由 .dailymotion.com 后缀覆盖。矩阵缺口：视频分片流域不在规则内，需 M4 实测确认播放可达。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "dailymotion-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".dailymotion.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "duckduckgo",
+                         "displayName":  "DuckDuckGo",
+                         "category":  "搜索引擎",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "duckduckgo.com"
+                                           ],
+                         "notes":  "DoH 验证 2 域（2026-08-13）：duckduckgo.com/external-content.duckduckgo.com 均解析（Azure 52.250.x），图片代理域由 .duckduckgo.com 后缀覆盖。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "duckduckgo-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".duckduckgo.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "etsy",
+                         "displayName":  "Etsy",
+                         "category":  "手工艺品电商",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "etsy.com"
+                                           ],
+                         "notes":  "DoH 验证 1 域（2026-08-13）：etsy.com 解析到 Fastly 段 151.101.x。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "etsy-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".etsy.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "pinterest",
+                         "displayName":  "Pinterest",
+                         "category":  "图片社交/灵感板",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "pinterest.com",
+                                               "pinimg.com"
+                                           ],
+                         "notes":  "DoH 验证 2 域（2026-08-13）：pinterest.com/pinimg.com 均解析（Fastly 151.101.x），图片 CDN 由 .pinimg.com 后缀覆盖。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "pinterest-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".pinterest.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "pinimg-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".pinimg.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "imgur",
+                         "displayName":  "Imgur",
+                         "category":  "图片托管",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "imgur.com"
+                                           ],
+                         "notes":  "DoH 验证 1 域（2026-08-13）：imgur.com 解析到 Fastly 段 199.232.x。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "imgur-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".imgur.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "bbc",
+                         "displayName":  "BBC",
+                         "category":  "新闻/媒体集团",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "bbc.com",
+                                               "bbc.co.uk"
+                                           ],
+                         "notes":  "DoH 验证 3 个 TLD 家族（2026-08-13）：bbc.com/bbc.co.uk（Fastly 151.101.x）、bbci.co.uk（自有段 212.58.x，静态资源 static/files/live 子域由 .bbci.co.uk 后缀覆盖）全部解析。矩阵 KnownIssue(2) 为参考实现的反代适配问题，对直连无影响。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "bbc-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".bbc.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "bbc-co-uk",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".bbc.co.uk"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "bbci-co-uk",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".bbci.co.uk"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "nytimes",
+                         "displayName":  "The New York Times",
+                         "category":  "新闻媒体",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "nytimes.com",
+                                               "nyt.com"
+                                           ],
+                         "notes":  "DoH 验证 2 域（2026-08-13）：nytimes.com/nyt.com 均解析（Fastly 151.101.x），多级子域（含追踪域 *.et.nytimes.com）由 .nytimes.com 后缀覆盖。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "nytimes-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".nytimes.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "nyt-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".nyt.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "quora",
+                         "displayName":  "Quora",
+                         "category":  "问答社区",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "quora.com",
+                                               "quoracdn.net"
+                                           ],
+                         "notes":  "DoH 验证 3 域（2026-08-13）：quora.com/quoracdn.net/qr.ae（短链域）均解析（qr.ae 为 Cloudflare 段）。矩阵的 SNI 伪装（fs.quoracdn.net）无等价，端到端真实 SNI 直连即可。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "quora-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".quora.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "quoracdn-net",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".quoracdn.net"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "qr-ae",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".qr.ae"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "v2ex",
+                         "displayName":  "V2EX",
+                         "category":  "中文技术社区",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  false,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "v2ex.com"
+                                           ],
+                         "notes":  "DoH 验证 1 域（2026-08-13）：v2ex.com 解析到 Cloudflare 段 172.66.x，CLEAN_DNS 直连（矩阵 Status=3）。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "v2ex-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".v2ex.com"
+                                                       },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "f-droid",
+                         "displayName":  "F-Droid",
+                         "category":  "开源 Android 应用商店",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "f-droid.org"
+                                           ],
+                         "notes":  "DoH 验证 1 域（2026-08-13）：f-droid.org 解析到自有段 37.218.x，forum.f-droid.org 由后缀覆盖。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "f-droid-org",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".f-droid.org"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "proton",
+                         "displayName":  "Proton",
+                         "category":  "隐私邮件/云服务套件",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "proton.me",
+                                               "mail.proton.me"
+                                           ],
+                         "notes":  "DoH 验证 2 域（2026-08-13）：proton.me/protonmail.com 均解析到 Proton 自有段 185.70.x，account/mail/calendar/drive 等功能子域由 .proton.me 后缀覆盖。认证/API 端点无需特殊处理（端到端直连）。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "proton-me",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".proton.me"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "protonmail-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".protonmail.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "gravatar",
+                         "displayName":  "Gravatar",
+                         "category":  "头像服务",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "gravatar.com"
+                                           ],
+                         "notes":  "DoH 验证 1 域（2026-08-13）：gravatar.com 解析到 Automattic 段 192.0.80.x。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "gravatar-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".gravatar.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "flickr",
+                         "displayName":  "Flickr",
+                         "category":  "图片托管/摄影社区",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "flickr.com",
+                                               "live.staticflickr.com"
+                                           ],
+                         "notes":  "DoH 验证 3 域（2026-08-13）：flickr.com（AWS 13.249.x）、live.staticflickr.com（CloudFront）解析；staticflickr.com 区域存在（live 为实际图片域）。identity.flickr.com 由 .flickr.com 后缀覆盖。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "flickr-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".flickr.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "staticflickr-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".staticflickr.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "patreon",
+                         "displayName":  "Patreon",
+                         "category":  "创作者赞助平台",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "patreon.com"
+                                           ],
+                         "notes":  "DoH 验证 2 域 + c10 抽查（2026-08-13）：patreon.com 解析到 Cloudflare 段；patreonusercontent.com 区域存在且 c10.patreonusercontent.com（媒体 CDN）解析（cdna 子域 NX，不采用）。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "patreon-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".patreon.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "patreonusercontent-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".patreonusercontent.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "hugging-face",
+                         "displayName":  "Hugging Face",
+                         "category":  "AI 模型/数据集托管",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "huggingface.co"
+                                           ],
+                         "notes":  "DoH 验证 3 域（2026-08-13）：huggingface.co（CloudFront 18.164.x）、cdn-avatars.huggingface.co（CloudFront）解析；cdn-lfs.huggingface.co 及 cdn-lfs-us-1 apex 无 A 记录（区域存在，LFS 下载主机为动态生成，由 .huggingface.co 后缀覆盖）。模型大文件端到端透传。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "huggingface-co",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".huggingface.co"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "ok",
+                         "displayName":  "OK",
+                         "category":  "俄语社交网络",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "ok.ru"
+                                           ],
+                         "notes":  "DoH 验证 1 域（2026-08-13）：ok.ru 解析到 Mail.ru 段 95.163.x，媒体子域 *.ms.ok.ru 由后缀覆盖。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "ok-ru",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".ok.ru"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "rfi",
+                         "displayName":  "RFI",
+                         "category":  "国际广播电台新闻",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "rfi.fr"
+                                           ],
+                         "notes":  "DoH 验证 1 域（2026-08-13）：rfi.fr 解析到 Akamai 段 23.48.x。矩阵的 HTTP/1.1 强制降级是反代协商问题（源站对 nginx h2 协商 403），端到端直连时 ALPN 由源站决定，浏览器原生协商，无等价问题。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "rfi-fr",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".rfi.fr"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "rumble",
+                         "displayName":  "Rumble",
+                         "category":  "视频平台",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "rumble.com"
+                                           ],
+                         "notes":  "DoH 验证 1 域（2026-08-13）：rumble.com 解析到 Cloudflare 段 172.66/162.159.x。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "rumble-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".rumble.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "rutube",
+                         "displayName":  "Rutube",
+                         "category":  "俄语视频平台",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "rutube.ru"
+                                           ],
+                         "notes":  "DoH 验证 1 域（2026-08-13）：rutube.ru 解析到自有段 109.238/178.248.x。矩阵 KnownIssue(2) 为参考实现的反代适配问题，对直连无影响。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "rutube-ru",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".rutube.ru"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "vercel",
+                         "displayName":  "Vercel",
+                         "category":  "部署平台",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "vercel.app"
+                                           ],
+                         "notes":  "DoH 验证 2 域 + example.vercel.app 抽查（2026-08-13）：vercel.app 与 example.vercel.app（通配部署域）均解析到 Vercel 自有边缘（64.29/216.198.x）。多租户证书问题对直连无影响（端到端真实 SNI，客户端证书校验原生）。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "vercel-app",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".vercel.app"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "z-library",
+                         "displayName":  "Z-Library",
+                         "category":  "电子书库",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "NEEDS_VERIFY",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "z-library.sk",
+                                               "z-lib.help"
+                                           ],
+                         "notes":  "DoH 验证 2 域（2026-08-13）：z-library.sk（45.225.135.171）与 z-lib.help（Cloudflare 段）今日均解析。平台有域名轮换机制（持续换域），单日快照不可靠，NEEDS_VERIFY + 需规则可配置更新。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "z-library-sk",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".z-library.sk"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "z-lib-help",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".z-lib.help"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "audiomack",
+                         "displayName":  "Audiomack",
+                         "category":  "音乐流媒体",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "NEEDS_VERIFY",
+                         "aaaaSuppress":  false,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "audiomack.com"
+                                           ],
+                         "notes":  "DoH 验证 2 域（2026-08-13）：audiomack.com 解析（AWS 216.137.x）；prod.us-east-1.aws.audiomack.com 为 NXDOMAIN（后端域已不存在）→ 剔除。矩阵无 SNI 上游为反代行为，直连发真实 SNI 由源决定（架构 §12.1 Partial），CLEAN_DNS + 可达性待 M4 实测。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "audiomack-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".audiomack.com"
+                                                       },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "tails",
+                         "displayName":  "Tails",
+                         "category":  "隐私系统发行版",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "tails.net",
+                                               "download.tails.net"
+                                           ],
+                         "notes":  "DoH 验证 2 域（2026-08-13）：tails.net/download.tails.net 均解析（自有段 94.142/204.13.x）。矩阵 X-Forwarded-For 伪造为反代专属行为，无 MITM 不可等价（架构 §12.1 Unsupported），不影响直连可达性。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "tails-net",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".tails.net"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "thetvdb",
+                         "displayName":  "TheTVDB",
+                         "category":  "影视剧数据 API",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "thetvdb.com"
+                                           ],
+                         "notes":  "DoH 验证 1 域（2026-08-13）：thetvdb.com 解析到 AWS 段 18.154.x。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "thetvdb-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".thetvdb.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "docker-hub",
+                         "displayName":  "Docker Hub",
+                         "category":  "容器镜像仓库",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  false,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "hub.docker.com",
+                                               "registry-1.docker.io"
+                                           ],
+                         "notes":  "DoH 验证 5 域（2026-08-13）：docker.com（Fastly 段）、docker.io（AWS）、hub.docker.com（Cloudflare，CNAME hub.docker.com.cdn.cloudflare.net）、registry-1.docker.io（AWS）、prod-publishers-content.s3.us-east-1.amazonaws.com（S3 内容桶，仍解析）全部有效。CLEAN_DNS 直连（矩阵 Status=3）；镜像层大文件/S3 签名端到端透传。registry-1.docker.io 为矩阵缺口域名，本次验证有效并入库。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "docker-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".docker.com"
+                                                       },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "docker-io",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".docker.io"
+                                                       },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "docker-s3-content",
+                                             "match":  {
+                                                           "type":  "EXACT",
+                                                           "value":  "prod-publishers-content.s3.us-east-1.amazonaws.com"
+                                                       },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "prismic-images",
+                         "displayName":  "Prismic Images",
+                         "category":  "CMS 图片 CDN",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "images.prismic.io"
+                                           ],
+                         "notes":  "DoH 验证 1 域（2026-08-13）：images.prismic.io 解析到 Fastly 段（CNAME prismic-io.imgix.net → fastly）。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "images-prismic-io",
+                                             "match":  {
+                                                           "type":  "EXACT",
+                                                           "value":  "images.prismic.io"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "whatsapp",
+                         "displayName":  "WhatsApp",
+                         "category":  "即时通讯",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  86400,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "web.whatsapp.com",
+                                               "whatsapp.com"
+                                           ],
+                         "notes":  "DoH 验证 2 域 + web.whatsapp.com 抽查（2026-08-13）：whatsapp.com/whatsapp.net 解析到 Meta 段 157.240.x，web.whatsapp.com（CNAME 到 mmx-ds.cdn.whatsapp.net）有效。Web 版 WebSocket（wss）长连接（矩阵潜在未配置项）→ idleTimeout 86400。原生客户端 UDP 协议不经本框架。business.whatsapp.com 由 .whatsapp.com 后缀覆盖。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "whatsapp-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".whatsapp.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "whatsapp-net",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".whatsapp.net"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "amazon-japan",
+                         "displayName":  "Amazon Japan",
+                         "category":  "电商（日区）",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "amazon.co.jp"
+                                           ],
+                         "notes":  "DoH 验证 1 域（2026-08-13）：amazon.co.jp 解析到 AWS 段 18.246.x。矩阵 SNI 伪装 amazon.com 为反代行为，无等价（架构 §12.1 Unsupported），端到端真实 SNI 证书链完整。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "amazon-co-jp",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".amazon.co.jp"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "pornhub",
+                         "displayName":  "Pornhub",
+                         "category":  "成人视频",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "NEEDS_VERIFY",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "pornhub.com"
+                                           ],
+                         "notes":  "DoH 验证 3 域 + 3 子域抽查（2026-08-13）：pornhub.com 解析（66.254.114.41）；phncdn.com 区域存在但抽查的 i1/ci/hi.phncdn.com 全部 NXDOMAIN（视频 CDN 主机名无法确认）→ 保留后缀但标注存疑；jsdelivr.net apex 返回占位 IP 1.2.3.4 但 cdn.jsdelivr.net 解析到 Cloudflare（前端资源实际由 cdn 子域承载，后缀有效）。视频播放器 CDN 域缺口需 M4 实测。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "pornhub-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".pornhub.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "phncdn-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".phncdn.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "jsdelivr-net",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".jsdelivr.net"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "wgcz-holding",
+                         "displayName":  "WGCZ Holding",
+                         "category":  "成人视频集团",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "NEEDS_VERIFY",
+                         "aaaaSuppress":  false,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "xvideos.com",
+                                               "xnxx.com"
+                                           ],
+                         "notes":  "DoH 验证 2 域（2026-08-13）：xvideos.com（89.222.127.x 自有段）/xnxx.com（152.233.100.x 自有段）均解析。矩阵无 SNI 上游为反代行为，直连发真实 SNI 由源决定（架构 §12.1 Partial）→ CLEAN_DNS；源为自有 IP 非 Cloudflare，直连可行性待 M4 实测。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "xvideos-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".xvideos.com"
+                                                       },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "xnxx-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".xnxx.com"
+                                                       },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "apkmirror",
+                         "displayName":  "APKMirror",
+                         "category":  "Android APK 镜像站",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  false,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "apkmirror.com"
+                                           ],
+                         "notes":  "DoH 验证 1 域（2026-08-13）：apkmirror.com 解析到 Cloudflare 段 104.17.x，CLEAN_DNS 直连（矩阵 Status=3）。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "apkmirror-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".apkmirror.com"
+                                                       },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "okx",
+                         "displayName":  "OKX.COM",
+                         "category":  "加密货币交易所",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  false,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "okx.com"
+                                           ],
+                         "notes":  "DoH 验证 1 域（2026-08-13）：okx.com 解析（95.41.x + AWS 18.166/18.167.x；当前 DNS 非 Cloudflare，矩阵 Status=3 分类依据 ECH 时代，CLEAN_DNS 策略仍适用）。行情 WebSocket 走直连不经 relay（CLEAN_DNS 无 relay 会话，WS 天然可用）。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "okx-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".okx.com"
+                                                       },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "x-twitter",
+                         "displayName":  "X/Twitter",
+                         "category":  "社交网络",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  true,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "twitter.com",
+                                               "x.com"
+                                           ],
+                         "notes":  "矩阵标注 NEEDS_VERIFY（nginx 有配置但 UI 无条目）。本次独立验证（DoH 4 域 + 3 子域抽查，2026-08-13）：twitter.com/x.com/t.co 解析到 Cloudflare 段 172.66.x；twimg.com 区域存在且 pbs/abs/video.twimg.com 全部解析（Cloudflare/Fastly）。全部有效，决定入库为独立 profile。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "twitter-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".twitter.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "x-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".x.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "t-co",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".t.co"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "twimg-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".twimg.com"
+                                                       },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "ao3",
+                         "displayName":  "Archive of Our Own",
+                         "category":  "文学创作社区",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  false,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "archiveofourown.org"
+                                           ],
+                         "notes":  "DoH 验证 1 域（2026-08-13）：archiveofourown.org 解析到 Cloudflare 段 104.20.x，CLEAN_DNS 直连（矩阵 Status=3）。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "archiveofourown-org",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".archiveofourown.org"
+                                                       },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "greasy-fork",
+                         "displayName":  "Greasy Fork",
+                         "category":  "用户脚本站",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  false,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "greasyfork.org"
+                                           ],
+                         "notes":  "DoH 验证 1 域（2026-08-13）：greasyfork.org 解析到 Cloudflare 段 172.67/104.21.x，CLEAN_DNS 直连（矩阵 Status=3）。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "greasyfork-org",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".greasyfork.org"
+                                                       },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "gelbooru",
+                         "displayName":  "Gelbooru",
+                         "category":  "图片板",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  false,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "gelbooru.com"
+                                           ],
+                         "notes":  "DoH 验证 2 域（2026-08-13）：gelbooru.com 解析（131.143.124.72）；rmzsglng.com 为矩阵记录的跟踪域，DoH 确认在线（Cloudflare 段 172.66/162.159.x），其跟踪性质未能公开独立确认（WebSearch 无结果），按矩阵 NX 语义入库并标注存疑。CLEAN_DNS 直连（矩阵 Status=3）。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "gelbooru-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".gelbooru.com"
+                                                       },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         },
+                                         {
+                                             "id":  "nx-rmzsglng",
+                                             "match":  {
+                                                           "type":  "EXACT",
+                                                           "value":  "rmzsglng.com"
+                                                       },
+                                             "transport":  "NXDOMAIN",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "wallhaven",
+                         "displayName":  "Wallhaven",
+                         "category":  "壁纸站",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  false,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "wallhaven.cc"
+                                           ],
+                         "notes":  "DoH 验证 1 域（2026-08-13）：wallhaven.cc 解析到 Cloudflare 段 104.26/172.67.x，CLEAN_DNS 直连（矩阵 Status=3）。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "wallhaven-cc",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".wallhaven.cc"
+                                                       },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "sankaku",
+                         "displayName":  "Sankaku Complex",
+                         "category":  "ACG 新闻/图片板",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  false,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "sankakucomplex.com"
+                                           ],
+                         "notes":  "DoH 验证 1 域（2026-08-13）：sankakucomplex.com 解析（143.192.150.194），CLEAN_DNS 直连（矩阵 Status=3）。图片子域 c.sankakucomplex.com 由后缀覆盖。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "sankakucomplex-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".sankakucomplex.com"
+                                                       },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "rule34video",
+                         "displayName":  "Rule34Video",
+                         "category":  "成人视频站",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  false,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "rule34video.com"
+                                           ],
+                         "notes":  "DoH 验证 1 域（2026-08-13）：rule34video.com 解析（190.115.31.243 自有段；当前 DNS 非 Cloudflare，CLEAN_DNS 策略仍适用）。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "rule34video-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".rule34video.com"
+                                                       },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "iwara",
+                         "displayName":  "Iwara",
+                         "category":  "动画/视频社区",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  false,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "iwara.tv"
+                                           ],
+                         "notes":  "DoH 验证 1 域（2026-08-13）：iwara.tv 解析到 Cloudflare 段 104.20/172.66.x，CLEAN_DNS 直连（矩阵 Status=3）。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "iwara-tv",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".iwara.tv"
+                                                       },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "dlsite",
+                         "displayName":  "DLsite",
+                         "category":  "日系数字内容商店",
+                         "enabledByDefault":  false,
+                         "priority":  0,
+                         "verifyStatus":  "VERIFIED",
+                         "aaaaSuppress":  false,
+                         "idleTimeoutSec":  60,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "dlsite.com"
+                                           ],
+                         "notes":  "DoH 验证 1 域（2026-08-13）：dlsite.com 解析到自有段 210.140.64.86（当前 DNS 非 Cloudflare，矩阵 Status=3 分类依据 ECH 时代，CLEAN_DNS 直连策略仍适用且更优——日本自有 AS 直连）。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "dlsite-com",
+                                             "match":  {
+                                                           "type":  "SUFFIX",
+                                                           "value":  ".dlsite.com"
+                                                       },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "DOH",
+                                             "aaaaSuppress":  null,
+                                             "fragmentTls":  null,
+                                             "fixedIp":  null
+                                         }
+                                     ]
+                     }
+                 ]
+}

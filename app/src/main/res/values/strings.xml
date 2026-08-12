@@ -1,0 +1,120 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">直连代理</string>
+
+    <!-- 首页 -->
+    <string name="home_title">直连代理</string>
+    <string name="module_status">模块状态</string>
+    <string name="status_waiting">等待框架连接...</string>
+    <string name="status_active">已激活</string>
+    <string name="status_disconnected">框架已断开</string>
+    <string name="framework_fmt">框架: %1$s v%2$s (%3$s)</string>
+    <string name="framework_api">API 版本: %1$s</string>
+    <string name="framework_scope">作用域: %1$s</string>
+
+    <string name="proxy_control">代理控制</string>
+    <string name="vpn_status_on">已开启 — 流量正在代理中</string>
+    <string name="vpn_status_off">已停止 — 开启以代理外部网络请求</string>
+    <string name="vpn_on">开启代理</string>
+    <string name="vpn_off">关闭代理</string>
+
+    <!-- 后端模式卡片（§15/§16） -->
+    <string name="mode_card_title">后端模式</string>
+    <string name="mode_auto">自动选择（Root 优先）</string>
+    <string name="mode_root">Root 透明模式</string>
+    <string name="mode_vpn">VPN 模式</string>
+    <string name="mode_xposed">Xposed 本地 DNS</string>
+    <string name="backend_status_none">当前后端：无</string>
+    <string name="backend_status_root">当前后端：Root 透明 · 不占用 VPN</string>
+    <string name="backend_status_vpn">当前后端：VPN</string>
+    <string name="backend_status_xposed">当前后端：Xposed 本地</string>
+    <string name="backend_status_failed">后端已失效（FAILED）</string>
+    <string name="root_caps_ok">Root 能力：su + iptables 可用</string>
+    <string name="root_caps_no">Root 能力：不可用</string>
+    <string name="root_caps_unknown">Root 能力：未探测</string>
+    <string name="private_dns_warning">检测到系统 Private DNS 非关闭状态，部分域名可能经 DoT 绕过直连规则</string>
+
+    <!-- 应用范围（§40） -->
+    <string name="scope_title">应用范围</string>
+    <string name="scope_all">全部应用</string>
+    <string name="scope_selected">仅选中的应用</string>
+    <string name="scope_excluded">排除选中的应用</string>
+    <string name="btn_pick_apps">选择应用…</string>
+    <string name="app_picker_title">选择应用</string>
+    <string name="app_picker_empty">未找到可选应用</string>
+    <string name="dialog_ok">确定</string>
+    <string name="dialog_cancel">取消</string>
+
+    <!-- AUTO → Root 确认（§17） -->
+    <string name="root_dialog_title">检测到 Root</string>
+    <string name="root_dialog_message">检测到 Root。使用 Root 透明模式（不占用系统 VPN）？取消则使用 VPN 模式</string>
+    <string name="root_dialog_use_root">使用 Root 模式</string>
+    <string name="root_dialog_use_vpn">使用 VPN 模式</string>
+    <string name="proxy_start_failed">[错误] 后端启动失败：%1$s</string>
+    <string name="vpn_authorize_denied">[警告] VPN 授权被拒绝</string>
+
+    <string name="services_title">服务管理</string>
+    <string name="btn_services">服务管理</string>
+    <string name="services_subtitle">启用规则服务，控制域名策略生效范围</string>
+    <string name="stats_enabled_services">启用服务</string>
+    <string name="stats_total_rules">规则总数</string>
+    <string name="stats_vip_pool">vIP 池</string>
+    <string name="stats_fmt_services">%1$d/%2$d</string>
+    <string name="stats_fmt_pool">%1$d 在用 · %2$d 会话</string>
+    <string name="stats_pool_empty">—</string>
+
+    <string name="tools_title">诊断工具</string>
+    <string name="diag_switch_label">引擎诊断日志</string>
+    <string name="btn_diag_dns">DNS 诊断</string>
+    <string name="btn_diag_tcp">连通性诊断</string>
+    <string name="diag_dns_running">正在执行 DNS 诊断...</string>
+    <string name="diag_tcp_running">正在执行连通性诊断...</string>
+    <string name="diag_quick_note">快速诊断：每个启用服务取一个测试端点，最多 %1$d 项。</string>
+    <string name="diag_timeout">[超时] 诊断任务超过总时限</string>
+    <string name="diag_init_failed">[错误] 规则引擎初始化失败</string>
+    <string name="diag_no_profile">(没有已启用的服务)</string>
+
+    <!-- 完整诊断（§52-§56） -->
+    <string name="btn_diag_full">完整诊断</string>
+    <string name="full_diag_running">正在执行完整诊断...</string>
+    <string name="full_diag_cancelling">正在取消...</string>
+    <string name="full_diag_progress">完整诊断 %1$d/%2$d · %3$s…</string>
+    <string name="full_diag_done">完整诊断 (%1$d/%2$d) 已完成</string>
+    <string name="full_diag_cancelled">完整诊断 (%1$d/%2$d) 已取消</string>
+
+    <string name="console_title">输出日志</string>
+    <string name="console_hint">等待测试...</string>
+    <string name="diag_none">未命中启用规则，放行系统 DNS</string>
+    <string name="diag_blocked">[屏蔽] NXDOMAIN 应答</string>
+    <string name="diag_resolve_fail">[解析失败] (%1$dms)</string>
+    <string name="diag_resolve_ok">[成功] %1$dms</string>
+    <string name="diag_no_a">(无)</string>
+    <string name="diag_reachable">可达</string>
+    <string name="diag_unreachable">超时/不可达</string>
+    <string name="diag_error">[错误] %1$s</string>
+    <string name="diag_tcp_line">IP = %1$s (DNS %2$dms) · TCP %3$dms → %4$s</string>
+
+    <string name="tp_passthrough">放行</string>
+    <string name="tp_clean_dns">纯净 DNS 直连</string>
+    <string name="tp_direct_ip">IP 直连</string>
+    <string name="tp_tls_fragment">TLS 分片中继</string>
+    <string name="tp_nxdomain">屏蔽</string>
+
+    <string name="btn_tg">加入 Telegram 群组</string>
+    <string name="btn_star">给项目一个 Star</string>
+    <string name="footer">基于 Xposed 框架本地运行&#10;Created by Mai_xiyu</string>
+
+    <!-- 服务管理页 -->
+    <string name="sm_back">返回</string>
+    <string name="sm_title">服务管理</string>
+    <string name="sm_enabled_count">已启用 %1$d/%2$d</string>
+    <string name="sm_search_hint">搜索服务名称或 ID</string>
+    <string name="sm_enable_all">全部开启</string>
+    <string name="sm_disable_all">全部关闭</string>
+    <string name="sm_rules_count">%1$d 条规则</string>
+
+    <!-- 验证状态徽标 -->
+    <string name="badge_verified">已验证</string>
+    <string name="badge_needs_verify">待验证</string>
+    <string name="badge_broken">已失效</string>
+</resources>

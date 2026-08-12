@@ -6,3 +6,5 @@
 /local.properties
 build
 api-master
+# Kotlin 编译器错误日志（构建产物）
+/.kotlin/

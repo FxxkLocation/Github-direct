@@ -3,6 +3,7 @@ package org.xiyu.githubdirect
 import android.app.Application
 import io.github.libxposed.service.XposedService
 import io.github.libxposed.service.XposedServiceHelper
+import org.xiyu.githubdirect.data.LegacyMigration
 import java.util.concurrent.CopyOnWriteArraySet
 
 class App : Application(), XposedServiceHelper.OnServiceListener {
@@ -20,6 +21,8 @@ class App : Application(), XposedServiceHelper.OnServiceListener {
 
     override fun onCreate() {
         super.onCreate()
+        // 旧版 hosts 数据迁移（github_hosts → direct_settings；失败静默）
+        LegacyMigration.run(this)
         XposedServiceHelper.registerListener(this)
     }
 

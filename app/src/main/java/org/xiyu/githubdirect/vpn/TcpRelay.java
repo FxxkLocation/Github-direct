@@ -2,19 +2,20 @@ package org.xiyu.githubdirect.vpn;
 
 import android.util.Log;
 
+import org.xiyu.githubdirect.core.net.ClientHelloAccumulator;
+import org.xiyu.githubdirect.core.net.TlsFragmenter;
+
 import java.io.InputStream;
-import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.ByteBuffer;
-import java.nio.channels.SelectionKey;
-import java.nio.channels.Selector;
 import java.nio.channels.SocketChannel;
 import java.util.Arrays;
 import java.util.Random;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -22,20 +23,23 @@ import java.util.concurrent.atomic.AtomicLong;
  * <p>
  * 工作在 TUN 层：
  * - 读取 TUN 中的 TCP 包，管理 TCP 状态机
- * - 对 GitHub IP 的 443 端口建立 protected Socket
- * - 将首个 ClientHello 分片发送（绕过 GFW SNI 检测）
+ * - 对目标 IP 的 443 端口建立 protected Socket
+ * - 将首个 ClientHello 分片发送（绕过 SNI 检测；分片逻辑为 core/net/TlsFragmenter 纯函数）
  * - 双向中继数据
+ *
+ * M1 接口化改造：
+ * - RouteTarget(realIp, fragmentTls, idleTimeoutSec) 参数对象
+ * - SessionLeaseHook 会话租约（vIP refs 生命周期）
+ * - maxSessions 会话上限（超限新 SYN 回 RST）
+ * - 分片判定/切分移入 core/net/TlsFragmenter（行为与旧实现完全一致）
  */
 public class TcpRelay {
 
     private static final String TAG = "GithubDirect";
     private static final int TCP_CONNECT_TIMEOUT = 10000;
     private static final int TCP_MSS = 1460; // 有效负载上限 = MTU(1500) - IP(20) - TCP(20)
-
-    // ClientHello 分片点：在 TLS Record Header (5字节) 后切割
-    // GFW 需要读完整个 ClientHello 才能提取 SNI
-    private static final int SPLIT_POSITION = 5;
-    private static final int SPLIT_DELAY_MS = 200;
+    private static final int TCP_READ_TIMEOUT_MS = 60000;
+    private static final int FIN_WAIT_MS = 5000;
 
     // TCP 状态
     private static final int SYN_RECEIVED = 1;
@@ -46,8 +50,33 @@ public class TcpRelay {
     private final ConcurrentHashMap<String, TcpSession> sessions = new ConcurrentHashMap<>();
     private final SocketProtector protector;
     private final PacketWriter tunWriter;
+    private final SessionLeaseHook leaseHook;
+    private final int maxSessions;
     private final Random random = new Random();
     private volatile boolean running = true;
+
+    /** 连接目标参数对象（由调用方按规则策略构造）。 */
+    public static class RouteTarget {
+        /** 目标真实 IP（4 字节 IPv4）。 */
+        public final byte[] realIp;
+        /** 是否对首个 ClientHello 做 TLS record 分片。 */
+        public final boolean fragmentTls;
+        /** 会话空闲超时（秒），0 = 不启用。 */
+        public final int idleTimeoutSec;
+
+        public RouteTarget(byte[] realIp, boolean fragmentTls, int idleTimeoutSec) {
+            this.realIp = realIp;
+            this.fragmentTls = fragmentTls;
+            this.idleTimeoutSec = idleTimeoutSec;
+        }
+    }
+
+    /** 会话租约钩子：SYN 创建会话 → onSessionOpen(vip)；会话关闭 → onSessionClose(vip)。 */
+    public interface SessionLeaseHook {
+        void onSessionOpen(int vip);
+
+        void onSessionClose(int vip);
+    }
 
     public interface SocketProtector {
         boolean protect(Socket socket);
@@ -58,8 +87,23 @@ public class TcpRelay {
     }
 
     public TcpRelay(SocketProtector protector, PacketWriter tunWriter) {
+        this(protector, tunWriter, new SessionLeaseHook() {
+            @Override
+            public void onSessionOpen(int vip) {
+            }
+
+            @Override
+            public void onSessionClose(int vip) {
+            }
+        }, 128);
+    }
+
+    public TcpRelay(SocketProtector protector, PacketWriter tunWriter,
+                    SessionLeaseHook leaseHook, int maxSessions) {
         this.protector = protector;
         this.tunWriter = tunWriter;
+        this.leaseHook = leaseHook;
+        this.maxSessions = maxSessions > 0 ? maxSessions : 128;
     }
 
     public void stop() {
@@ -75,9 +119,9 @@ public class TcpRelay {
      *
      * @param packet    完整 IP 包
      * @param ipHdrLen  IP 头长度
-     * @param realIp    目标 GitHub 的真实 IP（4 字节）
+     * @param target    连接目标（真实 IP / 分片开关 / 空闲超时）
      */
-    public void handlePacket(byte[] packet, int ipHdrLen, byte[] realIp) {
+    public void handlePacket(byte[] packet, int ipHdrLen, RouteTarget target) {
         if (!running) return;
 
         int totalLen = packet.length;
@@ -103,7 +147,8 @@ public class TcpRelay {
         byte[] clientIp = Arrays.copyOfRange(packet, 12, 16);
         byte[] virtualIp = Arrays.copyOfRange(packet, 16, 20);
 
-        String key = srcPort + ":" + dstPort;
+        // 会话 key 含 IP 四元组：不同客户端源 IP / 不同 vIP 同端口对不会碰撞（§48/§49）
+        String key = sessionKey(clientIp, srcPort, virtualIp, dstPort);
 
         // RST → 清理会话
         if (rst) {
@@ -129,11 +174,27 @@ public class TcpRelay {
                 closeSession(existing);
             }
 
+            // 会话上限：超限新 SYN 直接回 RST（防 fd/线程失控）
+            if (sessions.size() >= maxSessions) {
+                Log.w(TAG, "maxSessions(" + maxSessions + ") 超限，RST: " + key);
+                byte[] rstPacket = buildRst(packet, ipHdrLen);
+                if (rstPacket != null) {
+                    try {
+                        tunWriter.writePacket(rstPacket);
+                    } catch (Exception e) {
+                        Log.w(TAG, "TUN write RST: " + e.getMessage());
+                    }
+                }
+                return;
+            }
+
             TcpSession session = new TcpSession();
             session.key = key;
             session.clientIp = clientIp;
             session.virtualIp = virtualIp;
-            session.realIp = realIp;
+            session.realIp = target.realIp;
+            session.fragmentTls = target.fragmentTls;
+            session.idleTimeoutMs = target.idleTimeoutSec > 0 ? target.idleTimeoutSec * 1000L : 0;
             session.clientPort = srcPort;
             session.serverPort = dstPort;
             session.clientSeqNext = seq + 1;
@@ -141,9 +202,11 @@ public class TcpRelay {
             session.state = SYN_RECEIVED;
             sessions.put(key, session);
 
+            leaseHook.onSessionOpen(vipToInt(virtualIp));
+
             // 回复 SYN-ACK
             sendTcp(session, true, true, false, false, null);
-            Log.d(TAG, "TCP SYN: " + key + " → " + ipToString(realIp) + ":" + dstPort);
+            Log.d(TAG, "TCP SYN: " + key + " → " + ipToString(session.realIp) + ":" + dstPort);
             return;
         }
 
@@ -169,12 +232,15 @@ public class TcpRelay {
         if (dataLen > 0 && session.state == ESTABLISHED) {
             byte[] data = Arrays.copyOfRange(packet, dataOffset, totalLen);
             session.clientSeqNext = seq + dataLen;
+            session.lastActivity = System.currentTimeMillis();
 
             // 回复 ACK
             sendTcp(session, false, true, false, false, null);
 
-            // 放入写队列（非阻塞，不会卡 VPN 主线程）
-            forwardToServer(session, data);
+            // 放入写队列（非阻塞）；队列满 → 背压关闭会话
+            if (!forwardToServer(session, data)) {
+                Log.w(TAG, "Backpressure, session closed: " + key);
+            }
             return;
         }
 
@@ -183,8 +249,12 @@ public class TcpRelay {
             session.state = ESTABLISHED;
             byte[] data = Arrays.copyOfRange(packet, dataOffset, totalLen);
             session.clientSeqNext = seq + dataLen;
+            session.lastActivity = System.currentTimeMillis();
             sendTcp(session, false, true, false, false, null);
-            forwardToServer(session, data);
+            if (!forwardToServer(session, data)) {
+                Log.w(TAG, "Backpressure, session closed: " + key);
+                return; // 会话已关闭，不再连接服务器
+            }
             new Thread(() -> connectToServer(session), "TCP-" + key).start();
             return;
         }
@@ -224,7 +294,12 @@ public class TcpRelay {
                     InetAddress.getByAddress(session.realIp), session.serverPort),
                     TCP_CONNECT_TIMEOUT);
             socket.setTcpNoDelay(true);
-            socket.setSoTimeout(60000); // 读超时 60s
+            // 读超时与空闲策略对齐：idleTimeout 0 = 不启用 → 无限；否则取 max(60s, idleTimeout)
+            //（WebSocket 长连接域 idleTimeout 86400 不得被 60s 读超时误杀）
+            int soTimeout = session.idleTimeoutMs <= 0
+                    ? 0
+                    : (int) Math.max(TCP_READ_TIMEOUT_MS, session.idleTimeoutMs);
+            socket.setSoTimeout(soTimeout);
 
             session.serverSocket = socket;
             session.serverChannel = channel;
@@ -243,6 +318,8 @@ public class TcpRelay {
             Log.d(TAG, "Waiting for server data: " + session.key);
             int len;
             while (running && session.state == ESTABLISHED && (len = in.read(readBuf)) > 0) {
+                session.lastActivity = System.currentTimeMillis();
+
                 if (totalBytes == 0) {
                     Log.i(TAG, "First server data: " + session.key + ", " + len + " bytes");
                 } else {
@@ -270,24 +347,36 @@ public class TcpRelay {
                 sendTcp(session, false, true, false, true, null); // FIN
                 session.state = FIN_WAIT;
                 // 等待客户端发 FIN 完成四次挥手（handlePacket 会处理）
-                try { Thread.sleep(5000); } catch (InterruptedException ignored) {}
+                try { Thread.sleep(FIN_WAIT_MS); } catch (InterruptedException ignored) {}
             }
-            sessions.remove(session.key);
+            // remove-if-same：四元组 key 可能被新会话复用，仅当仍是本会话时才移除（防误删新会话）
+            sessions.remove(session.key, session);
             closeSession(session);
         }
     }
 
-    private void forwardToServer(TcpSession session, byte[] data) {
-        // 非阻塞：只放入写队列，由 connectToServer 的写线程消费
-        session.writeQueue.offer(data);
+    /**
+     * 把客户端数据放入写队列（非阻塞，不会卡 VPN 主线程）。
+     *
+     * @return false = 队列已满（背压）：会话已进入关闭流程（清队列+关 socket，
+     *         connectToServer 的 read 循环/writerLoop 自然退出），调用方应停止
+     *         向该会话提交数据并打日志。
+     */
+    private boolean forwardToServer(TcpSession session, byte[] data) {
+        if (session.writeQueue.offer(data)) return true;
+        // 背压：服务器消费过慢 → 安全关闭会话，防无界队列 OOM
+        Log.w(TAG, "Write queue full, closing session (backpressure): " + session.key);
+        closeSession(session);
+        return false;
     }
 
     /**
      * 写线程：从 writeQueue 取数据并通过 SocketChannel 写入。
-     * 第一个 ClientHello 做 TLS 记录层分片。
+     * 首个 ClientHello 经 ClientHelloAccumulator 累积到完整 record 后，
+     * 由 core/net/TlsFragmenter 纯函数做 TLS 记录层分片（两段发送 + SPLIT_DELAY_MS）。
      */
     private void writerLoop(TcpSession session) {
-        boolean firstData = true;
+        final ClientHelloAccumulator chAccum = session.chAccum;
         try {
             SocketChannel ch = session.serverChannel;
             if (ch == null || !ch.isConnected()) {
@@ -296,37 +385,36 @@ public class TcpRelay {
             }
             Log.d(TAG, "Writer started: " + session.key);
             while (running && session.state == ESTABLISHED) {
+                // 空闲超时检查（配合 read 循环的双向 lastActivity 判定）
+                if (session.idleTimeoutMs > 0
+                        && System.currentTimeMillis() - session.lastActivity > session.idleTimeoutMs) {
+                    Log.i(TAG, "Idle timeout, closing session: " + session.key);
+                    break;
+                }
+
                 byte[] data = session.writeQueue.poll(1, java.util.concurrent.TimeUnit.SECONDS);
                 if (data == null) continue;
 
-                // 合并队列中紧接着的数据
-                byte[] extra;
-                while ((extra = session.writeQueue.poll()) != null) {
-                    byte[] combined = new byte[data.length + extra.length];
-                    System.arraycopy(data, 0, combined, 0, data.length);
-                    System.arraycopy(extra, 0, combined, data.length, extra.length);
-                    data = combined;
-                }
+                // 首个 ClientHello：累积器补齐/判定（跨多段到达、超时、非 TLS 均可处理）
+                if (session.fragmentTls && !chAccum.isPassthrough()) {
+                    byte[] out = chAccum.feed(data, System.currentTimeMillis());
+                    if (out == null) continue; // 首 record 未齐，等待下一批
 
-                if (firstData && isTlsClientHello(data)) {
-                    firstData = false;
-                    byte[] fragmented = fragmentTlsRecord(data);
-                    if (fragmented != null) {
-                        int firstRecordEnd = 5 + ((fragmented[3] & 0xFF) << 8 | (fragmented[4] & 0xFF));
-                        channelWrite(ch, fragmented, 0, firstRecordEnd);
+                    if (chAccum.consumeFragmented()) {
+                        // 本次 feed 产生的分片：两段发送（首段、sleep、尾段）
+                        int firstRecordEnd = 5 + ((out[3] & 0xFF) << 8 | (out[4] & 0xFF));
+                        channelWrite(ch, out, 0, firstRecordEnd);
                         Log.d(TAG, "Writer: first fragment sent " + firstRecordEnd + " bytes");
-                        Thread.sleep(SPLIT_DELAY_MS);
-                        channelWrite(ch, fragmented, firstRecordEnd, fragmented.length - firstRecordEnd);
+                        Thread.sleep(TlsFragmenter.SPLIT_DELAY_MS);
+                        channelWrite(ch, out, firstRecordEnd, out.length - firstRecordEnd);
                         Log.i(TAG, "TLS record fragmented: " + firstRecordEnd + " + "
-                                + (fragmented.length - firstRecordEnd) + " bytes (SNI-aware)");
+                                + (out.length - firstRecordEnd) + " bytes");
                     } else {
-                        channelWrite(ch, data, 0, 1);
-                        Thread.sleep(SPLIT_DELAY_MS);
-                        channelWrite(ch, data, 1, data.length - 1);
-                        Log.i(TAG, "ClientHello fallback split: 1 + " + (data.length - 1) + " bytes");
+                        // 非分片（放弃分片/超时/非 TLS/判定失败）→ 一次写入
+                        channelWrite(ch, out, 0, out.length);
+                        Log.d(TAG, "Forwarded to server: " + session.key + " " + out.length + " bytes");
                     }
                 } else {
-                    firstData = false;
                     channelWrite(ch, data, 0, data.length);
                     Log.d(TAG, "Forwarded to server: " + session.key + " " + data.length + " bytes");
                 }
@@ -349,148 +437,53 @@ public class TcpRelay {
         }
     }
 
-    /**
-     * 检查数据是否为 TLS ClientHello。
-     * TLS Record: type=0x16 (Handshake), version=0x0301/0x0303, then Handshake type=0x01 (ClientHello)
-     */
-    private boolean isTlsClientHello(byte[] data) {
-        return data.length > 5
-                && data[0] == 0x16          // TLS Handshake
-                && data[1] == 0x03          // Version major = 3
-                && (data[2] >= 0x01 && data[2] <= 0x04) // Version minor 1-4
-                && data[5] == 0x01;         // ClientHello
-    }
-
-    /**
-     * TLS 记录层分片：将一个 TLS 记录拆成两个独立的 TLS 记录。
-     * 在 SNI 域名中间分割，使 GFW DPI 无法从单个 TLS 记录中提取完整 SNI。
-     *
-     * @return 两个相邻的 TLS 记录的字节数组，或 null（无法分片）
-     */
-    private byte[] fragmentTlsRecord(byte[] data) {
-        if (data.length < 10) return null;
-
-        // 原始 TLS Record: [type(1)][version(2)][length(2)] + [handshake_data]
-        int recordDataLen = ((data[3] & 0xFF) << 8) | (data[4] & 0xFF);
-        if (5 + recordDataLen > data.length) return null;
-
-        byte tlsType = data[0];
-        byte verMaj = data[1];
-        byte verMin = data[2];
-
-        // 找到 SNI 在 handshake data 中的偏移量（相对于 record 数据起始 offset=5）
-        int sniOffset = findSniOffset(data, 5, recordDataLen);
-        int splitPoint;
-
-        if (sniOffset > 0) {
-            // 在 SNI 域名中间切割
-            splitPoint = sniOffset + 3; // 切到 SNI hostname 的前 3 个字节
-            Log.d(TAG, "SNI found at handshake offset " + (sniOffset - 5) + ", split at " + splitPoint);
-        } else {
-            // 找不到 SNI，在 handshake data 中间切
-            splitPoint = 5 + Math.min(recordDataLen / 2, 50);
-            Log.d(TAG, "SNI not found, split at middle: " + splitPoint);
-        }
-
-        if (splitPoint <= 5 || splitPoint >= 5 + recordDataLen) return null;
-
-        int firstLen = splitPoint - 5;    // 第一个 TLS 记录的数据长度
-        int secondLen = recordDataLen - firstLen; // 第二个 TLS 记录的数据长度
-
-        // 构建两个 TLS 记录
-        byte[] result = new byte[5 + firstLen + 5 + secondLen];
-
-        // Record 1
-        result[0] = tlsType;
-        result[1] = verMaj;
-        result[2] = verMin;
-        result[3] = (byte) ((firstLen >> 8) & 0xFF);
-        result[4] = (byte) (firstLen & 0xFF);
-        System.arraycopy(data, 5, result, 5, firstLen);
-
-        // Record 2
-        int off2 = 5 + firstLen;
-        result[off2] = tlsType;
-        result[off2 + 1] = verMaj;
-        result[off2 + 2] = verMin;
-        result[off2 + 3] = (byte) ((secondLen >> 8) & 0xFF);
-        result[off2 + 4] = (byte) (secondLen & 0xFF);
-        System.arraycopy(data, splitPoint, result, off2 + 5, secondLen);
-
-        return result;
-    }
-
-    /**
-     * 在 TLS ClientHello 中查找 SNI 域名的起始偏移（在整个 data 数组中的绝对偏移）。
-     *
-     * ClientHello 结构:
-     *   handshake_type(1) + length(3) + version(2) + random(32) + session_id(1+var)
-     *   + cipher_suites(2+var) + compression(1+var) + extensions_len(2) + extensions
-     *
-     * SNI extension:
-     *   ext_type(2) = 0x0000 + ext_len(2) + server_name_list_len(2)
-     *   + name_type(1) + name_len(2) + name(var)
-     *
-     * @return SNI 域名字符串的起始绝对偏移，或 -1
-     */
-    private int findSniOffset(byte[] data, int recordStart, int recordLen) {
-        int pos = recordStart;
-        int end = recordStart + recordLen;
-
-        // Handshake header: type(1) + length(3)
-        if (pos + 4 > end) return -1;
-        pos += 4;
-
-        // ClientHello: version(2) + random(32) = 34 bytes
-        if (pos + 34 > end) return -1;
-        pos += 34;
-
-        // Session ID: length(1) + data
-        if (pos + 1 > end) return -1;
-        int sidLen = data[pos] & 0xFF;
-        pos += 1 + sidLen;
-
-        // Cipher Suites: length(2) + data
-        if (pos + 2 > end) return -1;
-        int csLen = ((data[pos] & 0xFF) << 8) | (data[pos + 1] & 0xFF);
-        pos += 2 + csLen;
-
-        // Compression Methods: length(1) + data
-        if (pos + 1 > end) return -1;
-        int cmLen = data[pos] & 0xFF;
-        pos += 1 + cmLen;
-
-        // Extensions: length(2)
-        if (pos + 2 > end) return -1;
-        int extTotalLen = ((data[pos] & 0xFF) << 8) | (data[pos + 1] & 0xFF);
-        pos += 2;
-        int extEnd = pos + extTotalLen;
-        if (extEnd > end) extEnd = end;
-
-        // 遍历 extensions 寻找 SNI (type = 0x0000)
-        while (pos + 4 <= extEnd) {
-            int extType = ((data[pos] & 0xFF) << 8) | (data[pos + 1] & 0xFF);
-            int extLen = ((data[pos + 2] & 0xFF) << 8) | (data[pos + 3] & 0xFF);
-
-            if (extType == 0x0000 && extLen > 5) {
-                // SNI extension: list_len(2) + name_type(1) + name_len(2) + name
-                int sniDataStart = pos + 4;
-                if (sniDataStart + 5 <= extEnd) {
-                    // name_type(1 byte at +2) name_len(2 bytes at +3) name(at +5)
-                    int nameStart = sniDataStart + 5;
-                    if (nameStart < extEnd) {
-                        return nameStart; // SNI 域名字符串的起始位置
-                    }
-                }
-            }
-
-            pos += 4 + extLen;
-        }
-
-        return -1;
-    }
-
     // ==================== TCP 包构造 ====================
+
+    /**
+     * 对入站 TCP 包构造 RST/ACK 应答包（IP 层交换源/目的）。
+     * 用于：lookupReal(vip)==null 时由调用方回 RST（消除静默丢包挂起）。
+     */
+    public static byte[] buildRst(byte[] packet, int ipHdrLen) {
+        if (packet.length < ipHdrLen + 20) return null;
+        int totalLen = readU16(packet, 2);
+        if (totalLen < ipHdrLen + 20 || totalLen > packet.length) totalLen = packet.length;
+        int flagsWord = readU16(packet, ipHdrLen + 12);
+        int tcpHdrLen = ((flagsWord >> 12) & 0xF) * 4;
+        if (ipHdrLen + tcpHdrLen > totalLen) return null;
+        int dataLen = Math.max(0, totalLen - ipHdrLen - tcpHdrLen);
+        boolean syn = (flagsWord & 0x002) != 0;
+
+        long seq = readU32(packet, ipHdrLen + 4);
+        long ackNum = seq + (syn ? 1 : dataLen);
+
+        int srcPort = readU16(packet, ipHdrLen);
+        int dstPort = readU16(packet, ipHdrLen + 2);
+
+        byte[] pkt = new byte[40]; // 20 IP + 20 TCP
+        // IPv4 Header
+        pkt[0] = 0x45;
+        writeU16(pkt, 2, 40);
+        writeU16(pkt, 6, 0x4000); // Don't Fragment
+        pkt[8] = 64;
+        pkt[9] = 6; // TCP
+        System.arraycopy(packet, 16, pkt, 12, 4); // Src = 原目的 IP（vIP）
+        System.arraycopy(packet, 12, pkt, 16, 4); // Dst = 原源 IP（client）
+        writeU16(pkt, 10, 0);
+        writeU16(pkt, 10, ipChecksum(pkt, 0, 20));
+
+        // TCP Header
+        int t = 20;
+        writeU16(pkt, t, dstPort);   // Src port = 原目的端口
+        writeU16(pkt, t + 2, srcPort); // Dst port = 原源端口
+        writeU32(pkt, t + 4, 0);     // Seq
+        writeU32(pkt, t + 8, ackNum); // Ack = 对方 seq + 载荷长度
+        writeU16(pkt, t + 12, (5 << 12) | 0x014); // ACK + RST
+        writeU16(pkt, t + 14, 0);    // Window
+        writeU16(pkt, t + 16, 0);
+        writeU16(pkt, t + 16, tcpChecksum(pkt, 20, 20, pkt, 12, pkt, 16));
+
+        return pkt;
+    }
 
     private void sendTcp(TcpSession s, boolean syn, boolean ack, boolean psh, boolean fin, byte[] data) {
         int dataLen = (data != null) ? data.length : 0;
@@ -616,6 +609,10 @@ public class TcpRelay {
     }
 
     private void closeSession(TcpSession session) {
+        // 租约关闭恰好一次
+        if (session.leaseClosed.compareAndSet(false, true)) {
+            leaseHook.onSessionClose(vipToInt(session.virtualIp));
+        }
         // 放入毒丸让写线程退出
         session.writeQueue.clear();
         if (session.serverChannel != null) {
@@ -633,6 +630,11 @@ public class TcpRelay {
     }
 
     // ==================== 工具方法 ====================
+
+    private static int vipToInt(byte[] ip) {
+        return ((ip[0] & 0xFF) << 24) | ((ip[1] & 0xFF) << 16)
+                | ((ip[2] & 0xFF) << 8) | (ip[3] & 0xFF);
+    }
 
     private static int readU16(byte[] d, int o) {
         return ((d[o] & 0xFF) << 8) | (d[o + 1] & 0xFF);
@@ -703,6 +705,15 @@ public class TcpRelay {
         return (ip[0] & 0xFF) + "." + (ip[1] & 0xFF) + "." + (ip[2] & 0xFF) + "." + (ip[3] & 0xFF);
     }
 
+    /**
+     * 会话 key：srcIp:srcPort:dstIp(vIP):dstPort。
+     * 含 IP 的四元组，避免不同客户端源 IP 或不同 vIP 同端口对时碰撞
+     * （原实现仅 srcPort:dstPort，多客户端会串会话）。示例："1.2.3.4:12345:10.0.0.10:443"。
+     */
+    public static String sessionKey(byte[] srcIp, int srcPort, byte[] dstIp, int dstPort) {
+        return ipToString(srcIp) + ":" + srcPort + ":" + ipToString(dstIp) + ":" + dstPort;
+    }
+
     // ==================== Session ====================
 
     static class TcpSession {
@@ -710,18 +721,25 @@ public class TcpRelay {
         byte[] clientIp;
         byte[] virtualIp;
         byte[] realIp;
+        boolean fragmentTls;
+        long idleTimeoutMs;
         int clientPort;
         int serverPort;
         long clientSeqNext;
         AtomicLong mySeq;
-        int state;
-        boolean firstData = true;
-        byte[] pendingData;
+        /** 多线程读写（VPN 主循环 / connect 线程 / writer 线程）→ volatile 保证可见性。 */
+        volatile int state;
+        volatile long lastActivity = System.currentTimeMillis();
+        final AtomicBoolean leaseClosed = new AtomicBoolean(false);
 
         Socket serverSocket;
         SocketChannel serverChannel;
 
-        // 写队列：VPN 主线程只向队列提交数据，connectToServer 线程负责写入
-        final LinkedBlockingQueue<byte[]> writeQueue = new LinkedBlockingQueue<>();
+        // 写队列：VPN 主线程只向队列提交数据，connectToServer 线程负责写入。
+        // 有界 64 段（每段 ≤ 客户端段大小）：服务器消费过慢时 offer 失败 → 背压关闭会话，防无界 OOM
+        final LinkedBlockingQueue<byte[]> writeQueue = new LinkedBlockingQueue<>(64);
+
+        /** TLS ClientHello 累积器（仅 fragmentTls 会话使用；writerLoop 单线程访问）。 */
+        final ClientHelloAccumulator chAccum = new ClientHelloAccumulator();
     }
 }

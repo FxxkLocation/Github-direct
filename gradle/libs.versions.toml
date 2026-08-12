@@ -2,6 +2,8 @@
 agp = "9.0.1"
 xposed-api = "101.0.0"
 xposed-service = "101.0.0"
+junit = "4.13.2"
+orgjson = "20240303"
 
 [plugins]
 agp-app = { id = "com.android.application", version.ref = "agp" }
@@ -9,3 +11,5 @@ agp-app = { id = "com.android.application", version.ref = "agp" }
 [libraries]
 libxposed-api = { group = "io.github.libxposed", name = "api", version.ref = "xposed-api" }
 libxposed-service = { group = "io.github.libxposed", name = "service", version.ref = "xposed-service" }
+junit = { group = "junit", name = "junit", version.ref = "junit" }
+orgjson = { group = "org.json", name = "json", version.ref = "orgjson" }
