@@ -26,8 +26,7 @@
                                              ],
                                       "v6":  [
                                                  "2606:50c0::/32",
-                                                 "2a0a:a440::/32",
-                                                 "2001:4860::/32"
+                                                 "2a0a:a440::/29"
                                              ]
                                   },
                          "testEndpoints":  [
@@ -37,7 +36,7 @@
                          "providers":  [
                                            {
                                                "providerId":  "github-hosts",
-                                               "intervalHours":  4,
+                                               "intervalHours":  6,
                                                "tcpProbePort":  443
                                            }
                                        ],
@@ -49,7 +48,9 @@
                                                            "value":  "github.com"
                                                        },
                                              "transport":  "TLS_FRAGMENT_RELAY",
-                                             "resolver":  "PROVIDER_FIRST"
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "web",
+                                             "cidrRef":  "github-meta"
                                          },
                                          {
                                              "id":  "api.github.com",
@@ -58,7 +59,9 @@
                                                            "value":  "api.github.com"
                                                        },
                                              "transport":  "TLS_FRAGMENT_RELAY",
-                                             "resolver":  "PROVIDER_FIRST"
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "api",
+                                             "cidrRef":  "github-meta"
                                          },
                                          {
                                              "id":  "gist.github.com",
@@ -67,7 +70,9 @@
                                                            "value":  "gist.github.com"
                                                        },
                                              "transport":  "TLS_FRAGMENT_RELAY",
-                                             "resolver":  "PROVIDER_FIRST"
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "web",
+                                             "cidrRef":  "github-meta"
                                          },
                                          {
                                              "id":  "codeload.github.com",
@@ -76,7 +81,9 @@
                                                            "value":  "codeload.github.com"
                                                        },
                                              "transport":  "TLS_FRAGMENT_RELAY",
-                                             "resolver":  "PROVIDER_FIRST"
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "web",
+                                             "cidrRef":  "github-meta"
                                          },
                                          {
                                              "id":  "alive.github.com",
@@ -85,7 +92,9 @@
                                                            "value":  "alive.github.com"
                                                        },
                                              "transport":  "TLS_FRAGMENT_RELAY",
-                                             "resolver":  "PROVIDER_FIRST"
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "web",
+                                             "cidrRef":  "github-meta"
                                          },
                                          {
                                              "id":  "central.github.com",
@@ -94,7 +103,9 @@
                                                            "value":  "central.github.com"
                                                        },
                                              "transport":  "TLS_FRAGMENT_RELAY",
-                                             "resolver":  "PROVIDER_FIRST"
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "web",
+                                             "cidrRef":  "github-meta"
                                          },
                                          {
                                              "id":  "github.githubassets.com",
@@ -103,7 +114,9 @@
                                                            "value":  "github.githubassets.com"
                                                        },
                                              "transport":  "CLEAN_DNS",
-                                             "resolver":  "PROVIDER_FIRST"
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "assets",
+                                             "cidrRef":  "github-meta"
                                          },
                                          {
                                              "id":  "collector.github.com",
@@ -112,7 +125,9 @@
                                                            "value":  "collector.github.com"
                                                        },
                                              "transport":  "CLEAN_DNS",
-                                             "resolver":  "PROVIDER_FIRST"
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "api",
+                                             "cidrRef":  "github-meta"
                                          },
                                          {
                                              "id":  "copilot-proxy.githubusercontent.com",
@@ -121,7 +136,9 @@
                                                            "value":  "copilot-proxy.githubusercontent.com"
                                                        },
                                              "transport":  "CLEAN_DNS",
-                                             "resolver":  "PROVIDER_FIRST"
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "usercontent",
+                                             "cidrRef":  "github-meta"
                                          },
                                          {
                                              "id":  "github.blog",
@@ -130,7 +147,65 @@
                                                            "value":  "github.blog"
                                                        },
                                              "transport":  "CLEAN_DNS",
-                                             "resolver":  "PROVIDER_FIRST"
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "web",
+                                             "cidrRef":  "github-meta"
+                                         },
+                                         {
+                                             "id":  "raw.githubusercontent.com",
+                                             "match":  { "type":  "EXACT", "value":  "raw.githubusercontent.com" },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "usercontent",
+                                             "cidrRef":  "github-meta"
+                                         },
+                                         {
+                                             "id":  "objects.githubusercontent.com",
+                                             "match":  { "type":  "EXACT", "value":  "objects.githubusercontent.com" },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "usercontent",
+                                             "cidrRef":  "github-meta"
+                                         },
+                                         {
+                                             "id":  "release-assets.githubusercontent.com",
+                                             "match":  { "type":  "EXACT", "value":  "release-assets.githubusercontent.com" },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "usercontent",
+                                             "cidrRef":  "github-meta"
+                                         },
+                                         {
+                                             "id":  "avatars.githubusercontent.com",
+                                             "match":  { "type":  "EXACT", "value":  "avatars.githubusercontent.com" },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "usercontent",
+                                             "cidrRef":  "github-meta"
+                                         },
+                                         {
+                                             "id":  "user-images.githubusercontent.com",
+                                             "match":  { "type":  "EXACT", "value":  "user-images.githubusercontent.com" },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "usercontent",
+                                             "cidrRef":  "github-meta"
+                                         },
+                                         {
+                                             "id":  "media.githubusercontent.com",
+                                             "match":  { "type":  "EXACT", "value":  "media.githubusercontent.com" },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "usercontent",
+                                             "cidrRef":  "github-meta"
+                                         },
+                                         {
+                                             "id":  "camo.githubusercontent.com",
+                                             "match":  { "type":  "EXACT", "value":  "camo.githubusercontent.com" },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "usercontent",
+                                             "cidrRef":  "github-meta"
                                          },
                                          {
                                              "id":  "suffix.githubusercontent.com",
@@ -139,7 +214,9 @@
                                                            "value":  ".githubusercontent.com"
                                                        },
                                              "transport":  "CLEAN_DNS",
-                                             "resolver":  "PROVIDER_FIRST"
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "usercontent",
+                                             "cidrRef":  "github-meta"
                                          },
                                          {
                                              "id":  "suffix.github.io",
@@ -148,7 +225,9 @@
                                                            "value":  ".github.io"
                                                        },
                                              "transport":  "CLEAN_DNS",
-                                             "resolver":  "PROVIDER_FIRST"
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "pages",
+                                             "cidrRef":  "github-meta"
                                          },
                                          {
                                              "id":  "suffix.github.com",
@@ -157,7 +236,9 @@
                                                            "value":  ".github.com"
                                                        },
                                              "transport":  "CLEAN_DNS",
-                                             "resolver":  "PROVIDER_FIRST"
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "web",
+                                             "cidrRef":  "github-meta"
                                          },
                                          {
                                              "id":  "suffix.githubassets.com",
@@ -166,7 +247,9 @@
                                                            "value":  ".githubassets.com"
                                                        },
                                              "transport":  "CLEAN_DNS",
-                                             "resolver":  "PROVIDER_FIRST"
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "assets",
+                                             "cidrRef":  "github-meta"
                                          }
                                      ]
                      },
@@ -177,18 +260,51 @@
                          "enabledByDefault":  false,
                          "priority":  0,
                          "verifyStatus":  "NEEDS_VERIFY",
-                         "aaaaSuppress":  true,
+                         "aaaaSuppress":  false,
                          "idleTimeoutSec":  60,
                          "cidr":  null,
                          "testEndpoints":  [
                                                "youtube.com",
                                                "googlevideo.com"
                                            ],
-                         "notes":  "DoH 验证 9 域 + 3 子域抽查（2026-08-13，dns.google）：youtube.com/youtu.be/ytimg.com(i,s)/ggpht(lh3)/youtube-nocookie/youtube-3rd-party 均解析，其中 youtube-3rd-party.com apex 无 A 记录且无任何公开资料，剔除（无法独立确认为真实域）。googlevideo.com 按架构 §12.1 用 CLEAN_DNS（不做 gvt1 域重写；直连可达性需 M4 实测，故 NEEDS_VERIFY）。QUIC 三态回退由引擎处理（relay 域 QUIC_FALLBACK_WORKING）。",
+                         "notes":  "依据 Google 官方 Chrome/Workspace 主机名建议维护，并为网页、Innertube API、图片及 googlevideo 流媒体加入精确入口；保留 IPv6。google-edge 池只共享已验证 IP 种子，所有精确域及动态后缀连接仍按真实 SNI、系统信任链和主机名独立验证，不继承其他域的验证结论。Android YouTube/Cronet 实际播放、分片续传与双栈切换仍待实机，故 NEEDS_VERIFY。",
                          "providers":  [
 
                                        ],
                          "domains":  [
+                                         {
+                                             "id":  "www-youtube-com",
+                                             "match":  { "type":  "EXACT", "value":  "www.youtube.com" },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "youtube-web",
+                                             "candidatePool":  "google-edge"
+                                         },
+                                         {
+                                             "id":  "youtubei-googleapis-com",
+                                             "match":  { "type":  "EXACT", "value":  "youtubei.googleapis.com" },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "youtube-api",
+                                             "candidatePool":  "google-edge"
+                                         },
+                                         {
+                                             "id":  "i-ytimg-com",
+                                             "match":  { "type":  "EXACT", "value":  "i.ytimg.com" },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "youtube-images",
+                                             "candidatePool":  "google-edge"
+                                         },
+                                         {
+                                             "id":  "redirector-googlevideo-com",
+                                             "match":  { "type":  "EXACT", "value":  "redirector.googlevideo.com" },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "aaaaSuppress":  false,
+                                             "endpointGroup":  "youtube-stream",
+                                             "candidatePool":  "google-edge"
+                                         },
                                          {
                                              "id":  "youtube-com",
                                              "match":  {
@@ -199,7 +315,8 @@
                                              "resolver":  "DOH",
                                              "aaaaSuppress":  null,
                                              "fragmentTls":  null,
-                                             "fixedIp":  null
+                                             "fixedIp":  null,
+                                             "candidatePool":  "google-edge"
                                          },
                                          {
                                              "id":  "youtu-be",
@@ -211,7 +328,8 @@
                                              "resolver":  "DOH",
                                              "aaaaSuppress":  null,
                                              "fragmentTls":  null,
-                                             "fixedIp":  null
+                                             "fixedIp":  null,
+                                             "candidatePool":  "google-edge"
                                          },
                                          {
                                              "id":  "ytimg-com",
@@ -223,7 +341,8 @@
                                              "resolver":  "DOH",
                                              "aaaaSuppress":  null,
                                              "fragmentTls":  null,
-                                             "fixedIp":  null
+                                             "fixedIp":  null,
+                                             "candidatePool":  "google-edge"
                                          },
                                          {
                                              "id":  "ggpht-com",
@@ -235,7 +354,8 @@
                                              "resolver":  "DOH",
                                              "aaaaSuppress":  null,
                                              "fragmentTls":  null,
-                                             "fixedIp":  null
+                                             "fixedIp":  null,
+                                             "candidatePool":  "google-edge"
                                          },
                                          {
                                              "id":  "youtube-nocookie-com",
@@ -247,7 +367,8 @@
                                              "resolver":  "DOH",
                                              "aaaaSuppress":  null,
                                              "fragmentTls":  null,
-                                             "fixedIp":  null
+                                             "fixedIp":  null,
+                                             "candidatePool":  "google-edge"
                                          },
                                          {
                                              "id":  "googlevideo-com",
@@ -259,7 +380,8 @@
                                              "resolver":  "DOH",
                                              "aaaaSuppress":  false,
                                              "fragmentTls":  null,
-                                             "fixedIp":  null
+                                             "fixedIp":  null,
+                                             "candidatePool":  "google-edge"
                                          }
                                      ]
                      },
@@ -269,19 +391,51 @@
                          "category":  "搜索引擎/账户生态",
                          "enabledByDefault":  false,
                          "priority":  0,
-                         "verifyStatus":  "VERIFIED",
-                         "aaaaSuppress":  true,
+                         "verifyStatus":  "NEEDS_VERIFY",
+                         "aaaaSuppress":  false,
                          "idleTimeoutSec":  60,
                          "cidr":  null,
                          "testEndpoints":  [
                                                "google.com",
                                                "gstatic.com"
                                            ],
-                         "notes":  "DoH 验证 9 域（2026-08-13，dns.google）全部解析（142.251.x 段）。矩阵的正则通配（google|goog）用 9 个 SUFFIX 表达，无功能损失。SNI 伪装 g.cn 无等价（架构 §12.1 Unsupported）：端到端发真实 SNI，Google 对真实 SNI 正常响应，对可达性无影响。googleweblight.com 服务已下线但域名仍解析，保留覆盖历史链接。googlesyndication.com/gstatic.com 与 pixiv 的 NX 广告规则存在跨 profile 重叠，仲裁按 profile id 字典序（google-llc 先于 pixiv），需实现方确认 NX 优先策略。",
+                         "notes":  "依据 Google 官方 Chrome/Workspace 主机名清单维护，含账户、API、静态资源、1e100 与 gvt 下载域；保留 IPv6。Google 公布的地址集合持续变化且与 Google Cloud 范围重叠，本阶段不把宽 CIDR 整体接入防火墙。google-edge 池只跨规则共享已验证 IP 种子，每个目标域必须以真实 SNI、系统信任链和主机名重新验证后才能发布。不会使用 g.cn 伪 SNI。当前设备尚未完成 Google App/Play 全链路，故 NEEDS_VERIFY。",
                          "providers":  [
 
                                        ],
                          "domains":  [
+                                         {
+                                             "id":  "www-google-com",
+                                             "match":  { "type":  "EXACT", "value":  "www.google.com" },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "google-web",
+                                             "candidatePool":  "google-edge"
+                                         },
+                                         {
+                                             "id":  "accounts-google-com",
+                                             "match":  { "type":  "EXACT", "value":  "accounts.google.com" },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "google-auth",
+                                             "candidatePool":  "google-edge"
+                                         },
+                                         {
+                                             "id":  "play-googleapis-com",
+                                             "match":  { "type":  "EXACT", "value":  "play.googleapis.com" },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "google-play",
+                                             "candidatePool":  "google-edge"
+                                         },
+                                         {
+                                             "id":  "www-gstatic-com",
+                                             "match":  { "type":  "EXACT", "value":  "www.gstatic.com" },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "google-static",
+                                             "candidatePool":  "google-edge"
+                                         },
                                          {
                                              "id":  "google-com",
                                              "match":  {
@@ -292,7 +446,8 @@
                                              "resolver":  "DOH",
                                              "aaaaSuppress":  null,
                                              "fragmentTls":  null,
-                                             "fixedIp":  null
+                                             "fixedIp":  null,
+                                             "candidatePool":  "google-edge"
                                          },
                                          {
                                              "id":  "googleapis-com",
@@ -304,7 +459,8 @@
                                              "resolver":  "DOH",
                                              "aaaaSuppress":  null,
                                              "fragmentTls":  null,
-                                             "fixedIp":  null
+                                             "fixedIp":  null,
+                                             "candidatePool":  "google-edge"
                                          },
                                          {
                                              "id":  "googleusercontent-com",
@@ -316,7 +472,8 @@
                                              "resolver":  "DOH",
                                              "aaaaSuppress":  null,
                                              "fragmentTls":  null,
-                                             "fixedIp":  null
+                                             "fixedIp":  null,
+                                             "candidatePool":  "google-edge"
                                          },
                                          {
                                              "id":  "googledrive-com",
@@ -328,7 +485,8 @@
                                              "resolver":  "DOH",
                                              "aaaaSuppress":  null,
                                              "fragmentTls":  null,
-                                             "fixedIp":  null
+                                             "fixedIp":  null,
+                                             "candidatePool":  "google-edge"
                                          },
                                          {
                                              "id":  "googlesyndication-com",
@@ -340,7 +498,8 @@
                                              "resolver":  "DOH",
                                              "aaaaSuppress":  null,
                                              "fragmentTls":  null,
-                                             "fixedIp":  null
+                                             "fixedIp":  null,
+                                             "candidatePool":  "google-edge"
                                          },
                                          {
                                              "id":  "googleweblight-com",
@@ -352,7 +511,8 @@
                                              "resolver":  "DOH",
                                              "aaaaSuppress":  null,
                                              "fragmentTls":  null,
-                                             "fixedIp":  null
+                                             "fixedIp":  null,
+                                             "candidatePool":  "google-edge"
                                          },
                                          {
                                              "id":  "gstatic-com",
@@ -364,7 +524,8 @@
                                              "resolver":  "DOH",
                                              "aaaaSuppress":  null,
                                              "fragmentTls":  null,
-                                             "fixedIp":  null
+                                             "fixedIp":  null,
+                                             "candidatePool":  "google-edge"
                                          },
                                          {
                                              "id":  "gmail-com",
@@ -376,7 +537,8 @@
                                              "resolver":  "DOH",
                                              "aaaaSuppress":  null,
                                              "fragmentTls":  null,
-                                             "fixedIp":  null
+                                             "fixedIp":  null,
+                                             "candidatePool":  "google-edge"
                                          },
                                          {
                                              "id":  "android-com",
@@ -388,7 +550,44 @@
                                              "resolver":  "DOH",
                                              "aaaaSuppress":  null,
                                              "fragmentTls":  null,
-                                             "fixedIp":  null
+                                             "fixedIp":  null,
+                                             "candidatePool":  "google-edge"
+                                         },
+                                         {
+                                             "id":  "one-e100-net",
+                                             "match":  { "type":  "SUFFIX", "value":  ".1e100.net" },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "aaaaSuppress":  false,
+                                             "endpointGroup":  "google-edge",
+                                             "candidatePool":  "google-edge"
+                                         },
+                                         {
+                                             "id":  "gvt1-com",
+                                             "match":  { "type":  "SUFFIX", "value":  ".gvt1.com" },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "aaaaSuppress":  false,
+                                             "endpointGroup":  "google-download",
+                                             "candidatePool":  "google-edge"
+                                         },
+                                         {
+                                             "id":  "gvt2-com",
+                                             "match":  { "type":  "SUFFIX", "value":  ".gvt2.com" },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "aaaaSuppress":  false,
+                                             "endpointGroup":  "google-download",
+                                             "candidatePool":  "google-edge"
+                                         },
+                                         {
+                                             "id":  "gvt3-com",
+                                             "match":  { "type":  "SUFFIX", "value":  ".gvt3.com" },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "aaaaSuppress":  false,
+                                             "endpointGroup":  "google-download",
+                                             "candidatePool":  "google-edge"
                                          }
                                      ]
                      },
@@ -491,19 +690,40 @@
                          "category":  "即时通讯",
                          "enabledByDefault":  false,
                          "priority":  0,
-                         "verifyStatus":  "VERIFIED",
-                         "aaaaSuppress":  true,
+                         "verifyStatus":  "NEEDS_VERIFY",
+                         "aaaaSuppress":  false,
                          "idleTimeoutSec":  86400,
                          "cidr":  null,
                          "testEndpoints":  [
                                                "discord.com",
                                                "discord.gg"
                                            ],
-                         "notes":  "DoH 验证 4 域 + gateway.discord.gg/media.discordapp.net 抽查（2026-08-13）：discord.com/discord.gg/discordapp.com/discordapp.net 区域全部存在（Cloudflare 162.159.x）；gateway 网关与媒体域均解析。WebSocket 长连接（gateway）→ idleTimeout 86400。语音 UDP 不在覆盖（与参考项目一致，架构 §12.1）。",
+                         "notes":  "核心入口依据 Discord 官方 Developer 文档：API/网页、gateway.discord.gg WebSocket、cdn.discordapp.com 与 media.discordapp.net；保留 IPv6，Gateway 长连接 idleTimeout 86400。语音媒体 UDP 不属于本期 TCP/443 中继，若客户端与网络均提供可达 IPv6则保持系统原生直连。当前设备未安装 Discord 客户端，故 NEEDS_VERIFY。",
                          "providers":  [
 
                                        ],
                          "domains":  [
+                                         {
+                                             "id":  "gateway-discord-gg",
+                                             "match":  { "type":  "EXACT", "value":  "gateway.discord.gg" },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "discord-gateway"
+                                         },
+                                         {
+                                             "id":  "cdn-discordapp-com",
+                                             "match":  { "type":  "EXACT", "value":  "cdn.discordapp.com" },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "discord-cdn"
+                                         },
+                                         {
+                                             "id":  "media-discordapp-net",
+                                             "match":  { "type":  "EXACT", "value":  "media.discordapp.net" },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "discord-media"
+                                         },
                                          {
                                              "id":  "discord-com",
                                              "match":  {
@@ -551,6 +771,198 @@
                                              "aaaaSuppress":  null,
                                              "fragmentTls":  null,
                                              "fixedIp":  null
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "openai",
+                         "displayName":  "OpenAI / ChatGPT",
+                         "category":  "AI 平台",
+                         "enabledByDefault":  false,
+                         "priority":  10,
+                         "verifyStatus":  "NEEDS_VERIFY",
+                         "aaaaSuppress":  false,
+                         "idleTimeoutSec":  86400,
+                         "cidr":  null,
+                         "testEndpoints":  [
+                                               "https://chatgpt.com",
+                                               "https://api.openai.com",
+                                               "https://ws.chatgpt.com"
+                                           ],
+                         "notes":  "域名依据 OpenAI 官方 Network recommendations（2026-08-27）维护；ChatGPT/Codex 流式会话与 ws.chatgpt.com WebSocket 使用 TCP/443，保留 IPv6。默认路径保持端到端 TLS；用户显式开启本机 TLS 终止时，带 echConfigDomain 的规则只把当前严格验证候选送入 ECH 预检，ECH 接受且真实内层域名证书通过后才发布。原生客户端若采用证书固定可能不兼容该可选模式。Voice 的 UDP/3478 不在首期 TCP/443 范围。",
+                         "providers":  [
+
+                                       ],
+                         "domains":  [
+                                         {
+                                             "id":  "api-openai-com",
+                                             "match":  { "type":  "EXACT", "value":  "api.openai.com" },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "openai-api",
+                                             "echConfigDomain":  "cloudflare-ech.com",
+                                             "nat64FallbackEligible":  true
+                                         },
+                                         {
+                                             "id":  "ws-chatgpt-com",
+                                             "match":  { "type":  "EXACT", "value":  "ws.chatgpt.com" },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "chatgpt-stream",
+                                             "echConfigDomain":  "cloudflare-ech.com",
+                                             "nat64FallbackEligible":  true
+                                         },
+                                         {
+                                             "id":  "android-chat-openai-com",
+                                             "match":  { "type":  "EXACT", "value":  "android.chat.openai.com" },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "openai-android",
+                                             "echConfigDomain":  "cloudflare-ech.com",
+                                             "nat64FallbackEligible":  true
+                                         },
+                                         {
+                                             "id":  "auth-openai-com",
+                                             "match":  { "type":  "EXACT", "value":  "auth.openai.com" },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "openai-auth",
+                                             "echConfigDomain":  "cloudflare-ech.com",
+                                             "nat64FallbackEligible":  true
+                                         },
+                                         {
+                                             "id":  "openai-com",
+                                             "match":  { "type":  "SUFFIX", "value":  ".openai.com" },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "openai",
+                                             "echConfigDomain":  "cloudflare-ech.com",
+                                             "nat64FallbackEligible":  true
+                                         },
+                                         {
+                                             "id":  "chatgpt-com",
+                                             "match":  { "type":  "SUFFIX", "value":  ".chatgpt.com" },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "chatgpt",
+                                             "echConfigDomain":  "cloudflare-ech.com",
+                                             "nat64FallbackEligible":  true
+                                         },
+                                         {
+                                             "id":  "oaistatic-com",
+                                             "match":  { "type":  "SUFFIX", "value":  ".oaistatic.com" },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "static",
+                                             "echConfigDomain":  "cloudflare-ech.com",
+                                             "nat64FallbackEligible":  true
+                                         },
+                                         {
+                                             "id":  "oaiusercontent-com",
+                                             "match":  { "type":  "SUFFIX", "value":  ".oaiusercontent.com" },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "usercontent",
+                                             "echConfigDomain":  "cloudflare-ech.com",
+                                             "nat64FallbackEligible":  true
+                                         },
+                                         {
+                                             "id":  "oaistatsig-com",
+                                             "match":  { "type":  "SUFFIX", "value":  ".oaistatsig.com" },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "telemetry"
+                                         },
+                                         {
+                                             "id":  "ct-sendgrid-net",
+                                             "match":  { "type":  "SUFFIX", "value":  ".ct.sendgrid.net" },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "mail"
+                                         },
+                                         {
+                                             "id":  "intercom-io",
+                                             "match":  { "type":  "SUFFIX", "value":  ".intercom.io" },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "support"
+                                         },
+                                         {
+                                             "id":  "intercomcdn-com",
+                                             "match":  { "type":  "SUFFIX", "value":  ".intercomcdn.com" },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "support-static"
+                                         },
+                                         {
+                                             "id":  "openaimerge-com",
+                                             "match":  { "type":  "SUFFIX", "value":  ".openaimerge.com" },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "merge-cdn"
+                                         },
+                                         {
+                                             "id":  "workos-com",
+                                             "match":  { "type":  "SUFFIX", "value":  ".workos.com" },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "workos"
+                                         },
+                                         {
+                                             "id":  "workoscdn-com",
+                                             "match":  { "type":  "SUFFIX", "value":  ".workoscdn.com" },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "workos-static"
+                                         },
+                                         {
+                                             "id":  "challenges-cloudflare-com",
+                                             "match":  { "type":  "EXACT", "value":  "challenges.cloudflare.com" },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "challenge"
+                                         },
+                                         {
+                                             "id":  "js-stripe-com",
+                                             "match":  { "type":  "EXACT", "value":  "js.stripe.com" },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "payments"
+                                         },
+                                         {
+                                             "id":  "openai-sentry-207216",
+                                             "match":  { "type":  "EXACT", "value":  "o207216.ingest.sentry.io" },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "telemetry"
+                                         },
+                                         {
+                                             "id":  "openai-sentry-33249",
+                                             "match":  { "type":  "EXACT", "value":  "o33249.ingest.sentry.io" },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "telemetry"
+                                         },
+                                         {
+                                             "id":  "openai-datadog",
+                                             "match":  { "type":  "EXACT", "value":  "rum.browser-intake-datadoghq.com" },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "telemetry"
+                                         },
+                                         {
+                                             "id":  "openai-apple-humb",
+                                             "match":  { "type":  "EXACT", "value":  "humb.apple.com" },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "device-attestation"
+                                         },
+                                         {
+                                             "id":  "workos-imgix-net",
+                                             "match":  { "type":  "EXACT", "value":  "workos.imgix.net" },
+                                             "transport":  "CLEAN_DNS",
+                                             "resolver":  "PROVIDER_FIRST",
+                                             "endpointGroup":  "workos-static"
                                          }
                                      ]
                      },

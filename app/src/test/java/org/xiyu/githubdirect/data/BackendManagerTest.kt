@@ -16,6 +16,11 @@ import org.xiyu.githubdirect.core.rules.AppScopeMode
 import org.xiyu.githubdirect.core.rules.BackendMode
 import org.xiyu.githubdirect.core.rules.MatcherIndex
 import org.xiyu.githubdirect.core.rules.RuleRegistry
+import org.xiyu.githubdirect.core.routing.CandidateSource
+import org.xiyu.githubdirect.core.routing.EndpointCandidate
+import org.xiyu.githubdirect.core.routing.EndpointPlan
+import org.xiyu.githubdirect.core.routing.RouteCapability
+import org.xiyu.githubdirect.core.routing.RouteSnapshot
 import org.xiyu.githubdirect.root.BackendState
 import org.xiyu.githubdirect.root.CapabilityProber
 import org.xiyu.githubdirect.root.FirewallRules
@@ -44,6 +49,8 @@ class BackendManagerTest {
         var healthResult = true
         var startCount = 0
         var stopCount = 0
+        var refreshCount = 0
+        var refreshResult = true
         override var state: BackendState = BackendState.STOPPED
         var lastRulesBuilder: ((Int) -> FirewallRules)? = null
         var lastHandler: ((ByteArray) -> ByteArray?)? = null
@@ -66,6 +73,12 @@ class BackendManagerTest {
             stopCount++
             state = BackendState.STOPPED
             return true
+        }
+
+        override fun refreshRules(): Boolean {
+            refreshCount++
+            state = if (refreshResult) BackendState.ACTIVE else BackendState.FAILED
+            return refreshResult
         }
 
         override fun healthCheck(): Boolean = healthResult && state == BackendState.ACTIVE
@@ -93,7 +106,10 @@ class BackendManagerTest {
     }
 
     private class Harness(
-        val store: InMemorySettingsStore = InMemorySettingsStore(),
+        val store: InMemorySettingsStore = InMemorySettingsStore().apply {
+            // 本夹具的非 scope 用例显式验证全应用规则；安全默认值由 ScopeSettingsTest 单独覆盖。
+            setAppScopeMode(AppScopeMode.ALL_APPS)
+        },
         val root: FakeRootControl = FakeRootControl(),
         val prober: FakeProber = FakeProber(),
         val resolver: FakeScopeResolver = FakeScopeResolver(),
@@ -101,6 +117,8 @@ class BackendManagerTest {
         var vpnActive = false
         var vpnStopRequested = 0
         var now = 0L
+        var routeSnapshot: RouteSnapshot = RouteSnapshot.EMPTY
+        var originalDestinationAvailable = false
         val notifications = Notifications()
 
         /** 假引擎/假池：fake root 从不调用 handler，仅需非空引用满足 BackendManager 门控。 */
@@ -130,9 +148,56 @@ class BackendManagerTest {
             vpnStopRequest = { vpnStopRequested++ },
             clock = { now },
             watchdogEnabled = false,
+            routeSnapshotProvider = { routeSnapshot },
+            originalDestinationAvailable = { originalDestinationAvailable },
         ).also { it.addBackendListener { mode, active, msg ->
             notifications.list += Triple(mode, active, msg)
         } }
+    }
+
+    // ---------- AUTO 解析 ----------
+
+    @Test
+    fun `规则刷新保持监听生命周期并只调用原位 refresh`() {
+        val h = Harness()
+        assertTrue(h.manager.start(BackendMode.ROOT_TRANSPARENT))
+
+        assertTrue(h.manager.refreshRootDataPlane())
+
+        assertEquals(1, h.root.startCount)
+        assertEquals(1, h.root.refreshCount)
+        assertEquals(0, h.root.stopCount)
+        assertEquals(BackendState.ACTIVE, h.root.state)
+        assertEquals(BackendMode.ROOT_TRANSPARENT, h.manager.currentMode())
+    }
+
+    @Test
+    fun `刷新前发现guardian已清链则完整重建而不生成无入口孤儿链`() {
+        val h = Harness()
+        assertTrue(h.manager.start(BackendMode.ROOT_TRANSPARENT))
+        h.root.healthResult = false
+
+        assertTrue(h.manager.refreshRootDataPlane())
+
+        assertEquals(1, h.root.stopCount)
+        assertEquals(2, h.root.startCount)
+        assertEquals(0, h.root.refreshCount)
+        assertEquals(BackendState.ACTIVE, h.root.state)
+        assertEquals(BackendMode.ROOT_TRANSPARENT, h.manager.currentMode())
+    }
+
+    @Test
+    fun `原位规则刷新失败进入 fail-open 而不回退成第二次 start`() {
+        val h = Harness()
+        assertTrue(h.manager.start(BackendMode.ROOT_TRANSPARENT))
+        h.root.refreshResult = false
+
+        assertFalse(h.manager.refreshRootDataPlane())
+
+        assertEquals(1, h.root.startCount)
+        assertEquals(1, h.root.refreshCount)
+        assertNull(h.manager.currentMode())
+        assertEquals(false, h.notifications.list.last().second)
     }
 
     // ---------- AUTO 解析 ----------
@@ -235,28 +300,44 @@ class BackendManagerTest {
     }
 
     @Test
-    fun `root 激活时切 XPOSED 先停 root`() {
+    fun `root 激活时切 XPOSED 先停再拉起中继`() {
         val h = Harness()
         assertTrue(h.manager.start(BackendMode.ROOT_TRANSPARENT))
         assertTrue(h.manager.start(BackendMode.XPOSED_ONLY))
         assertEquals(1, h.root.stopCount)
-        assertEquals(1, h.root.startCount) // 仅最初一次启动
+        assertEquals(2, h.root.startCount)
+        assertEquals(BackendMode.XPOSED_ONLY, h.manager.currentMode())
+        assertTrue(h.manager.isRootBackendActive())
     }
 
     // ---------- XPOSED_ONLY ----------
 
     @Test
-    fun `XPOSED_ONLY 不启动任何 backend 且状态直接 ACTIVE`() {
+    fun `XPOSED_ONLY Root 可用时启动透明中继`() {
         val h = Harness()
         assertTrue(h.manager.start(BackendMode.XPOSED_ONLY))
-        assertEquals(0, h.root.startCount)
-        assertEquals(0, h.root.stopCount)
+        assertEquals(1, h.root.startCount)
         assertEquals(0, h.vpnStopRequested)
         assertEquals(BackendMode.XPOSED_ONLY, h.manager.currentMode())
         assertTrue(h.manager.isBackendActive())
+        assertTrue(h.manager.isRootBackendActive())
         val last = h.notifications.list.last()
         assertEquals(BackendMode.XPOSED_ONLY, last.first)
         assertEquals(true, last.second)
+        assertTrue(last.third.contains("Root"))
+    }
+
+    @Test
+    fun `XPOSED_ONLY 引擎不可用时退化为纯 DNS`() {
+        val h = Harness()
+        h.engineAvailable = null
+        assertTrue(h.manager.start(BackendMode.XPOSED_ONLY))
+        assertEquals(0, h.root.startCount)
+        assertEquals(BackendMode.XPOSED_ONLY, h.manager.currentMode())
+        assertTrue(h.manager.isBackendActive())
+        assertFalse(h.manager.isRootBackendActive())
+        val last = h.notifications.list.last()
+        assertTrue(last.third.contains("无 SNI"))
     }
 
     // ---------- watchdog ----------
@@ -299,8 +380,19 @@ class BackendManagerTest {
     }
 
     @Test
-    fun `watchdog 仅在 ROOT 模式生效`() {
+    fun `watchdog 在 Xposed+Root 辅助时生效`() {
         val h = Harness()
+        assertTrue(h.manager.start(BackendMode.XPOSED_ONLY))
+        h.root.healthResult = false
+        h.manager.watchdogTick()
+        assertEquals("修复应再次 start", 2, h.root.startCount)
+        assertEquals(BackendMode.XPOSED_ONLY, h.manager.currentMode())
+    }
+
+    @Test
+    fun `watchdog 纯 DNS Xposed 不碰 root`() {
+        val h = Harness()
+        h.engineAvailable = null
         assertTrue(h.manager.start(BackendMode.XPOSED_ONLY))
         h.manager.watchdogTick()
         assertEquals(0, h.root.startCount)
@@ -326,7 +418,7 @@ class BackendManagerTest {
     // ---------- scope 接线（§40/§41） ----------
 
     @Test
-    fun `SELECTED_APPS 构造带 UID 子链的规则`() {
+    fun `SELECTED_APPS 构造每 UID 入口与单一共享载荷链`() {
         val h = Harness()
         h.store.setAppScopeMode(AppScopeMode.SELECTED_APPS)
         h.resolver.result = ResolvedScope(setOf(10001, 10002), degraded = false)
@@ -336,23 +428,59 @@ class BackendManagerTest {
         val builder = h.root.lastRulesBuilder
         assertTrue(builder != null)
         val rules = builder!!.invoke(10123)
-        val (nat, _) = rules.ownedChainNames()
-        assertTrue("应含选中 UID 子链", nat.contains("GHD_TCP_UID_10001"))
-        assertTrue(nat.contains("GHD_TCP_UID_10002"))
+        val script = rules.buildInstallScript()
+        assertEquals(1, script.lines().count { it == ":GHD_TCP_SEL - [0:0]" })
+        assertTrue(script.contains("--uid-owner 10001 -j GHD_TCP_SEL"))
+        assertTrue(script.contains("--uid-owner 10002 -j GHD_TCP_SEL"))
+        assertEquals(245, script.lines().count { it.startsWith("-A GHD_TCP_SEL ") && it.contains("-j REDIRECT") })
     }
 
     @Test
-    fun `scope 解析为空 → 降级 ALL_APPS 规则（无 UID 子链）`() {
+    fun `SELECTED scope解析为空拒绝启动且不退化到全部应用`() {
         val h = Harness()
         h.store.setAppScopeMode(AppScopeMode.SELECTED_APPS)
         h.resolver.result = ResolvedScope(emptySet(), degraded = true)
 
+        assertFalse(h.manager.start(BackendMode.ROOT_TRANSPARENT))
+        assertEquals(0, h.root.startCount)
+        assertTrue(h.root.lastRulesBuilder == null)
+        assertTrue(h.notifications.list.last().third.contains("作用域为空"))
+    }
+
+    @Test
+    fun `Electron-like宿主二次授权解析为scope子集并接入全TLS规则`() {
+        val h = Harness()
+        h.store.setAppScopeMode(AppScopeMode.SELECTED_APPS)
+        h.store.setScopedPackages(setOf("com.discord"))
+        h.store.setEmbeddedTlsCapturePackages(setOf("com.discord"))
+        h.resolver.result = ResolvedScope(setOf(10001), degraded = false)
+        h.originalDestinationAvailable = true
+
         assertTrue(h.manager.start(BackendMode.ROOT_TRANSPARENT))
 
         val rules = h.root.lastRulesBuilder!!.invoke(10123)
-        val (nat, filter) = rules.ownedChainNames()
-        assertTrue(nat.none { it.contains("_UID_") })
-        assertTrue(filter.none { it.contains("_UID_") })
+        assertEquals(setOf(10001), h.manager.embeddedCaptureUids())
+        assertEquals(1, rules.fullTlsCaptureUidCount())
+        assertTrue(
+            rules.buildInstallScript().contains(
+                "--uid-owner 10001 -p tcp --dport 443 -j REDIRECT --to-ports 7443",
+            ),
+        )
+    }
+
+    @Test
+    fun `非scope包的全TLS授权被忽略`() {
+        val h = Harness()
+        h.store.setAppScopeMode(AppScopeMode.SELECTED_APPS)
+        h.store.setScopedPackages(setOf("com.discord"))
+        h.store.setEmbeddedTlsCapturePackages(setOf("com.openai.chatgpt"))
+        h.resolver.result = ResolvedScope(setOf(10001), degraded = false)
+        h.originalDestinationAvailable = true
+
+        assertTrue(h.manager.start(BackendMode.ROOT_TRANSPARENT))
+        val rules = h.root.lastRulesBuilder!!.invoke(10123)
+        assertTrue(h.manager.embeddedCaptureUids().isEmpty())
+        assertEquals(0, rules.fullTlsCaptureUidCount())
     }
 
     @Test
@@ -364,8 +492,134 @@ class BackendManagerTest {
         assertTrue(h.manager.start(BackendMode.ROOT_TRANSPARENT))
 
         val rules = h.root.lastRulesBuilder!!.invoke(10123)
-        val (nat, _) = rules.ownedChainNames()
-        val uidChains = nat.count { it.contains("_UID_") }
-        assertTrue("截断到上限", uidChains <= FirewallRules.MAX_EXCLUDED_UIDS)
+        val sample = rules.buildInstallScript().lines()
+            .first { it.startsWith("-A GHD_TCP ") && it.contains("-j REDIRECT") }
+        assertEquals(
+            "自身排除加最多 8 个应用排除",
+            1 + FirewallRules.MAX_EXCLUDED_UIDS,
+            Regex("! --uid-owner").findAll(sample).count(),
+        )
+        assertFalse(sample.contains("--uid-owner 20009"))
+    }
+
+    @Test
+    fun `JNI可用时把路由快照与Root能力接入真实IP规则`() {
+        val h = Harness()
+        h.originalDestinationAvailable = true
+        h.prober.caps = goodCaps().copy(ipset = true, rejectTarget = true)
+        val candidate = EndpointCandidate(
+            domain = "github.com",
+            address = "20.205.243.166",
+            source = CandidateSource.WIRE_DOH,
+            fetchedAt = 1,
+            expiresAt = 0,
+            latencyMs = 20,
+            capability = RouteCapability.FRAGMENTED_TLS,
+        )
+        h.routeSnapshot = RouteSnapshot(
+            generation = 88,
+            createdAt = 1,
+            expiresAt = 0,
+            plans = mapOf(
+                "github.com" to EndpointPlan(
+                    domain = "github.com",
+                    endpointGroup = "web",
+                    candidates = listOf(candidate),
+                ),
+            ),
+            metaCidrs = setOf("140.82.112.0/20"),
+        )
+
+        assertTrue(h.manager.start(BackendMode.ROOT_TRANSPARENT))
+        val rules = h.root.lastRulesBuilder!!.invoke(10123)
+        assertTrue(rules.usesRealIpRedirect())
+        assertTrue(rules.usesIpSet())
+        assertEquals(88, rules.generation)
+        assertTrue(rules.buildInstallScript().contains("--match-set GHD_DST dst"))
+        assertTrue(rules.buildInstallScript().contains("-j REJECT"))
+    }
+
+    @Test
+    fun `关闭real_ip_redirect会移除真实IP和QUIC目标但保留vIP链`() {
+        val h = Harness()
+        h.originalDestinationAvailable = true
+        h.store.setRealIpRedirectEnabled(false)
+        h.routeSnapshot = RouteSnapshot(
+            generation = 90,
+            createdAt = 1,
+            expiresAt = 0,
+            plans = emptyMap(),
+            metaCidrs = setOf("140.82.112.0/20", "2606:50c0::/32"),
+        )
+
+        assertTrue(h.manager.start(BackendMode.ROOT_TRANSPARENT))
+        val rules = h.root.lastRulesBuilder!!.invoke(10123)
+        assertFalse(rules.usesRealIpRedirect())
+        assertEquals(0, rules.directDestinationCount())
+        assertEquals(0, rules.directIpv6DestinationCount())
+        assertTrue("关闭真实IP层仍须保留DNS/vIP回滚路径", rules.buildInstallScript().contains("10.0.0.10/32"))
+        assertFalse(rules.buildInstallScript().contains("140.82.112.0/20"))
+        assertEquals("", rules.buildIpv6InstallScript())
+    }
+
+    @Test
+    fun `完整IPv6能力把AAAA目标接入独立ip6tables规则`() {
+        val h = Harness()
+        h.originalDestinationAvailable = true
+        h.prober.caps = goodCaps().copy(
+            ipv6Netfilter = true,
+            ipv6RejectTarget = true,
+        )
+        h.routeSnapshot = RouteSnapshot(
+            generation = 89,
+            createdAt = 1,
+            expiresAt = 0,
+            plans = emptyMap(),
+            metaCidrs = setOf("2606:50c0::/32"),
+        )
+
+        assertTrue(h.manager.start(BackendMode.ROOT_TRANSPARENT))
+        val rules = h.root.lastRulesBuilder!!.invoke(10123)
+        val script = rules.buildIpv6InstallScript()
+        assertTrue(rules.usesIpv6RealIpRedirect())
+        assertEquals(1, rules.directIpv6DestinationCount())
+        assertTrue(script.contains("-d 2606:50c0::/32 -p tcp --dport 443 -j REDIRECT"))
+        assertTrue(script.contains("--reject-with icmp6-port-unreachable"))
+    }
+
+    @Test
+    fun `start ROOT 探测失败则不调用 root start 并给出缺项`() {
+        val h = Harness()
+        h.prober.caps = goodCaps().copy(suAvailable = false)
+        assertFalse(h.manager.start(BackendMode.ROOT_TRANSPARENT))
+        assertEquals(0, h.root.startCount)
+        assertNull(h.manager.currentMode())
+        val last = h.notifications.list.last()
+        assertEquals(false, last.second)
+        assertTrue(last.third.contains("缺少"))
+        assertTrue(last.third.contains("su"))
+    }
+
+    @Test
+    fun `探测失败只短缓存 失败后很快会重探`() {
+        val h = Harness()
+        h.prober.caps = goodCaps().copy(suAvailable = false)
+        h.manager.resolveAuto()
+        assertEquals(1, h.prober.calls)
+        h.now += 1_000
+        h.manager.resolveAuto()
+        assertEquals(1, h.prober.calls)
+        h.now += 5_000
+        h.manager.resolveAuto()
+        assertEquals(2, h.prober.calls)
+    }
+
+    @Test
+    fun `rootCapabilities force 忽略成功缓存`() {
+        val h = Harness()
+        h.manager.rootCapabilities()
+        assertEquals(1, h.prober.calls)
+        h.manager.rootCapabilities(force = true)
+        assertEquals(2, h.prober.calls)
     }
 }

@@ -28,9 +28,9 @@ class ScopeSettingsTest {
     }
 
     @Test
-    fun `app scope mode 默认 ALL_APPS 且 roundtrip`() {
+    fun `app scope mode 默认 SELECTED_APPS 且 roundtrip`() {
         val store = InMemorySettingsStore()
-        assertEquals(AppScopeMode.ALL_APPS, store.appScopeMode())
+        assertEquals(AppScopeMode.SELECTED_APPS, store.appScopeMode())
 
         store.setAppScopeMode(AppScopeMode.SELECTED_APPS)
         assertEquals(AppScopeMode.SELECTED_APPS, store.appScopeMode())
@@ -39,9 +39,9 @@ class ScopeSettingsTest {
     }
 
     @Test
-    fun `scoped packages 默认空集且 roundtrip`() {
+    fun `scoped packages 默认仅 GitHub App 且 roundtrip`() {
         val store = InMemorySettingsStore()
-        assertTrue(store.scopedPackages().isEmpty())
+        assertEquals(setOf("com.github.android"), store.scopedPackages())
 
         val pkgs = setOf("com.example.a", "org.xiyu.githubdirect", "com.android.chrome")
         store.setScopedPackages(pkgs)
@@ -58,5 +58,19 @@ class ScopeSettingsTest {
         store.setScopedPackages(setOf("com.example.a"))
         store.scopedPackages().let { (it as? MutableSet)?.add("hacker") }
         assertEquals(setOf("com.example.a"), store.scopedPackages())
+    }
+
+    @Test
+    fun `Electron-like宿主全TLS捕获默认关闭且独立持久化`() {
+        val store = InMemorySettingsStore()
+        assertTrue(store.embeddedTlsCapturePackages().isEmpty())
+
+        store.setEmbeddedTlsCapturePackages(setOf("com.discord", "com.openai.chatgpt"))
+        assertEquals(
+            setOf("com.discord", "com.openai.chatgpt"),
+            store.embeddedTlsCapturePackages(),
+        )
+        store.embeddedTlsCapturePackages().let { (it as? MutableSet)?.add("hacker") }
+        assertEquals(2, store.embeddedTlsCapturePackages().size)
     }
 }

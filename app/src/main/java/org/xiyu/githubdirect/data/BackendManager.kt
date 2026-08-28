@@ -14,11 +14,14 @@ import org.xiyu.githubdirect.root.BackendState
 import org.xiyu.githubdirect.root.CapabilityProber
 import org.xiyu.githubdirect.root.FirewallRules
 import org.xiyu.githubdirect.root.RootBackend
+import org.xiyu.githubdirect.root.RootBackendFailure
 import org.xiyu.githubdirect.root.RootCapabilities
 import org.xiyu.githubdirect.root.RootCapabilityProbe
 import org.xiyu.githubdirect.root.RootShell
 import org.xiyu.githubdirect.root.TransparentDnsListener
 import org.xiyu.githubdirect.root.TransparentTcpListener
+import org.xiyu.githubdirect.root.OriginalDestination
+import org.xiyu.githubdirect.core.routing.RouteSnapshot
 import org.xiyu.githubdirect.vpn.DnsVpnService
 import java.util.concurrent.CopyOnWriteArrayList
 
@@ -29,14 +32,41 @@ import java.util.concurrent.CopyOnWriteArrayList
 interface RootBackendControl {
     val state: BackendState
 
+    val lastFailure: RootBackendFailure? get() = null
+
+    val activeGeneration: Long get() = 0L
+
+    val realIpRedirectActive: Boolean get() = false
+
+    val ipv6RealIpRedirectActive: Boolean get() = false
+
+    val fullTlsCaptureUidCount: Int get() = 0
+
+    val ipSetLeaseActive: Boolean get() = false
+
+    val failOpenGuardianActive: Boolean get() = false
+
+    val unclassifiedTlsTotal: Long get() = 0L
+
+    val activeTcpSessions: Int get() = 0
+
     /** start 前注入 scope 规则构造器（BackendManager 按当前设置构建，uid 由 start 时探测提供）。 */
     fun configureScope(rulesBuilder: (Int) -> FirewallRules)
 
     fun start(dnsHandler: (ByteArray) -> ByteArray?, resolveRealIp: (Int) -> ByteArray?): Boolean
 
+    /** 仅切换防火墙/guardian 代次；监听器与已建立的 TCP 会话必须保持运行。 */
+    fun refreshRules(): Boolean = false
+
     fun stop(): Boolean
 
+    /** Root 服务跨进程停止时清理可能由上个进程留下的数据面。 */
+    fun cleanupStaleInstallation(): Boolean = stop()
+
     fun healthCheck(): Boolean
+
+    /** 由 RootRelayService 每 5 秒调用；刷新 ipset 租约和独立 guardian 心跳。 */
+    fun refreshFailOpenLease(): Boolean = true
 }
 
 /**
@@ -45,7 +75,7 @@ interface RootBackendControl {
  */
 class RootBackendAdapter(
     private val shell: RootShell = RootShell(),
-    private val capabilities: CapabilityProber = RootCapabilityProbe(RootShell()),
+    private val capabilities: CapabilityProber = RootCapabilityProbe(shell, android.os.Process.myUid()),
     private val dnsListener: org.xiyu.githubdirect.root.DnsListener = TransparentDnsListener(),
     private val tcpListener: org.xiyu.githubdirect.root.TcpListener = TransparentTcpListener(),
 ) : RootBackendControl {
@@ -62,6 +92,15 @@ class RootBackendAdapter(
     )
 
     override val state: BackendState get() = backend.state
+    override val lastFailure: RootBackendFailure? get() = backend.lastFailure
+    override val activeGeneration: Long get() = backend.activeGeneration
+    override val realIpRedirectActive: Boolean get() = backend.realIpRedirectActive
+    override val ipv6RealIpRedirectActive: Boolean get() = backend.ipv6RealIpRedirectActive
+    override val fullTlsCaptureUidCount: Int get() = backend.fullTlsCaptureUidCount
+    override val ipSetLeaseActive: Boolean get() = backend.ipSetLeaseActive
+    override val failOpenGuardianActive: Boolean get() = backend.failOpenGuardianActive
+    override val unclassifiedTlsTotal: Long get() = backend.unclassifiedTlsTotal
+    override val activeTcpSessions: Int get() = backend.activeTcpSessions
 
     override fun configureScope(rulesBuilder: (Int) -> FirewallRules) {
         scopeBuilder = rulesBuilder
@@ -70,14 +109,20 @@ class RootBackendAdapter(
     override fun start(dnsHandler: (ByteArray) -> ByteArray?, resolveRealIp: (Int) -> ByteArray?): Boolean =
         backend.start(dnsHandler, resolveRealIp)
 
+    override fun refreshRules(): Boolean = backend.refreshRules()
+
     override fun stop(): Boolean = backend.stop()
 
+    override fun cleanupStaleInstallation(): Boolean = backend.cleanupStaleInstallation()
+
     override fun healthCheck(): Boolean = backend.healthCheck()
+
+    override fun refreshFailOpenLease(): Boolean = backend.refreshFailOpenLease()
 }
 
 /**
  * 包名 → UID 的 scope 解析抽象（测试注入点）。
- * 结果为空（全部包未安装/非法）→ degraded=true，调用方降级 ALL_APPS。
+ * 结果为空（全部包未安装/非法）→ degraded=true；SELECTED 模式保持空集合（不接管任何应用）。
  */
 interface ScopeUidResolver {
     fun resolveUids(mode: AppScopeMode, packages: Set<String>): ResolvedScope
@@ -93,9 +138,10 @@ data class ResolvedScope(val uids: Set<Int>, val degraded: Boolean)
 class PackageScopeResolver(private val context: Context) : ScopeUidResolver {
 
     override fun resolveUids(mode: AppScopeMode, packages: Set<String>): ResolvedScope {
-        if (mode == AppScopeMode.ALL_APPS || packages.isEmpty()) {
+        if (mode == AppScopeMode.ALL_APPS) {
             return ResolvedScope(emptySet(), degraded = false)
         }
+        if (packages.isEmpty()) return ResolvedScope(emptySet(), degraded = true)
         val uids = LinkedHashSet<Int>()
         for (pkg in packages) {
             if (!pkg.matches(PACKAGE_RE)) {
@@ -110,7 +156,7 @@ class PackageScopeResolver(private val context: Context) : ScopeUidResolver {
             }
         }
         if (uids.isEmpty()) {
-            Log.w(TAG, "scope 解析结果为空，降级 ALL_APPS")
+            Log.w(TAG, "scope 解析结果为空；SELECTED 模式将保持不接管，EXCLUDED 模式等价于不排除")
             return ResolvedScope(uids, degraded = true)
         }
         return ResolvedScope(uids, degraded = false)
@@ -132,8 +178,8 @@ class PackageScopeResolver(private val context: Context) : ScopeUidResolver {
  *   真实 IP 解析 = VirtualIpPool.lookupReal(vip)?.v4
  * - VPN：只负责记录模式与互斥（切 root 前发 ACTION_STOP 停 VPN）；服务启动仍走
  *   VpnService.prepare 授权流（MainActivity 编排），激活态经 vpnActiveCheck 查询
- * - XPOSED_ONLY：不启动任何 backend，状态直接 ACTIVE
- * - watchdog（§22 轻量）：仅 ROOT 模式每 30s healthCheck；失败 → 一次 stop+start 修复；
+ * - XPOSED_ONLY：LSPosed DNS 注入；若 Root 能力可用则同时启动透明中继（SNI 分片）
+ * - watchdog（§22 轻量）：ROOT 以及 Xposed 叠了 Root 中继时每 30s healthCheck；失败 → 一次 stop+start 修复；
  *   再失败 → rollback（stop）→ 通知监听器 FAILED
  *
  * 构造全部可注入（纯 JVM 可单测）；watchdog 线程在 watchdogEnabled=false 时停用（测试用）。
@@ -150,6 +196,9 @@ class BackendManager @JvmOverloads constructor(
     private val clock: () -> Long = System::currentTimeMillis,
     private val watchdogIntervalMs: Long = WATCHDOG_INTERVAL_MS,
     private val watchdogEnabled: Boolean = true,
+    private val onRootPrepare: () -> Unit = {},
+    private val routeSnapshotProvider: () -> RouteSnapshot = { DirectEngine.routeSnapshot() },
+    private val originalDestinationAvailable: () -> Boolean = OriginalDestination::available,
 ) {
 
     @Volatile
@@ -166,6 +215,12 @@ class BackendManager @JvmOverloads constructor(
 
     @Volatile
     private var rootResolveRealIp: ((Int) -> ByteArray?)? = null
+
+    @Volatile
+    private var lastScopeUids: Set<Int> = emptySet()
+
+    @Volatile
+    private var lastEmbeddedCaptureUids: Set<Int> = emptySet()
 
     private val listeners = CopyOnWriteArrayList<(BackendMode?, Boolean, String) -> Unit>()
 
@@ -184,13 +239,16 @@ class BackendManager @JvmOverloads constructor(
     fun currentMode(): BackendMode? = currentModeInternal
 
     /**
-     * 最近一次能力探测结果（60s 内缓存；缓存未命中时发起真实探测）。
-     * 探测为 su 提权 + 多条命令，仅在用户主动切换/启动时调用。
+     * 最近一次能力探测结果。
+     * 成功缓存 [PROBE_CACHE_MS]；失败只缓存 [PROBE_FAIL_CACHE_MS]，避免刚在 KernelSU 授权后仍显示不可用。
      */
-    fun rootCapabilities(): RootCapabilities? {
+    fun rootCapabilities(force: Boolean = false): RootCapabilities? {
         val now = clock()
         val cached = lastProbe
-        if (cached != null && now - lastProbeAt < PROBE_CACHE_MS) return cached
+        if (!force && cached != null) {
+            val ttl = if (cached.requiredOk()) PROBE_CACHE_MS else PROBE_FAIL_CACHE_MS
+            if (now - lastProbeAt < ttl) return cached
+        }
         val caps = try {
             capProbe?.probe()
         } catch (t: Throwable) {
@@ -209,13 +267,38 @@ class BackendManager @JvmOverloads constructor(
     fun resolveAuto(): BackendMode =
         if (rootCapabilities()?.requiredOk() == true) BackendMode.ROOT_TRANSPARENT else BackendMode.VPN
 
+    /** Root 透明中继是否在跑（含 Xposed 模式下的 SNI 辅助中继）。 */
+    fun isRootBackendActive(): Boolean = rootBackend?.state == BackendState.ACTIVE
+
+    fun activeRuleGeneration(): Long = rootBackend?.activeGeneration ?: 0L
+
+    fun realIpRedirectActive(): Boolean = rootBackend?.realIpRedirectActive == true
+
+    fun ipv6RealIpRedirectActive(): Boolean = rootBackend?.ipv6RealIpRedirectActive == true
+
+    fun fullTlsCaptureUidCount(): Int = rootBackend?.fullTlsCaptureUidCount ?: 0
+
+    fun ipSetLeaseActive(): Boolean = rootBackend?.ipSetLeaseActive == true
+
+    fun failOpenGuardianActive(): Boolean = rootBackend?.failOpenGuardianActive == true
+
+    fun unclassifiedTlsTotal(): Long = rootBackend?.unclassifiedTlsTotal ?: 0L
+
+    fun rootBackendFailure(): RootBackendFailure? = rootBackend?.lastFailure
+
+    fun refreshFailOpenLease(): Boolean = rootBackend?.refreshFailOpenLease() ?: false
+
+    fun rootScopeUids(): Set<Int> = lastScopeUids
+
+    fun embeddedCaptureUids(): Set<Int> = lastEmbeddedCaptureUids
+
     /** 当前是否有后端在生效（VPN 服务静态激活态跨进程重启仍可识别）。 */
     fun isBackendActive(): Boolean {
         if (vpnActiveCheck()) return true
         return when (currentModeInternal) {
             null -> false
             BackendMode.ROOT_TRANSPARENT -> rootBackend?.state == BackendState.ACTIVE
-            BackendMode.XPOSED_ONLY -> true
+            BackendMode.XPOSED_ONLY -> true // DNS 注入在目标进程；Root 中继是否起来另见 isRootBackendActive()
             else -> false
         }
     }
@@ -237,8 +320,9 @@ class BackendManager @JvmOverloads constructor(
 
     /** 停止全部 backend，清空模式。与 start/watchdogTick 串行化。 */
     @Synchronized
-    fun stop() {
-        stopRoot()
+    @JvmOverloads
+    fun stop(cleanupStaleRoot: Boolean = false) {
+        stopRoot(cleanupStaleRoot)
         if (vpnActiveCheck() || currentModeInternal == BackendMode.VPN) {
             try {
                 vpnStopRequest()
@@ -247,19 +331,100 @@ class BackendManager @JvmOverloads constructor(
             }
         }
         currentModeInternal = null
+        try {
+            DirectEngine.stopProviders()
+            (DirectEngine.binder() as? org.xiyu.githubdirect.vpn.VpnNetworkBinder)?.stop()
+        } catch (t: Throwable) {
+            Log.w(TAG, "停 providers/binder 异常: ${t.message}")
+        }
         notifyState(null, false, "已停止")
     }
 
+    /** 候选 generation 变化时由前台服务串行调用：保持监听/会话，只切换自有规则与 guardian。 */
+    @Synchronized
+    fun refreshRootDataPlane(): Boolean {
+        val mode = currentModeInternal
+        if (mode != BackendMode.ROOT_TRANSPARENT && mode != BackendMode.XPOSED_ONLY) return false
+        val rb = rootBackend ?: return false
+        if (rb.state != BackendState.ACTIVE || !configureRootRules(rb, notifyOnMissing = false)) {
+            try {
+                rb.stop()
+            } catch (_: Throwable) {
+            }
+            currentModeInternal = null
+            stopWatchdog()
+            notifyState(null, false, "Root 规则更新准备失败，已 fail-open 回滚")
+            return false
+        }
+        val currentDataPlaneHealthy = try {
+            rb.healthCheck()
+        } catch (_: Throwable) {
+            false
+        }
+        if (!currentDataPlaneHealthy) {
+            // guardian 可能已在长耗时刷新期间按设计清除旧链。此时“保留 jump 的原位刷新”
+            // 没有可复用的活动数据面，必须走一次完整 stop/start 重建，而不是生成无入口孤儿链。
+            val handler = rootDnsHandler
+            val resolveRealIp = rootResolveRealIp
+            val repaired = try {
+                rb.stop()
+                handler != null && resolveRealIp != null &&
+                    rb.start(handler, resolveRealIp) && rb.state == BackendState.ACTIVE
+            } catch (t: Throwable) {
+                Log.w(TAG, "Root 数据面缺失后的完整重建异常: ${t.message}")
+                false
+            }
+            if (repaired) {
+                notifyState(mode, true, "Root 规则已完整重建至 generation ${rb.activeGeneration}")
+                return true
+            }
+            currentModeInternal = null
+            stopWatchdog()
+            notifyState(null, false, "Root 数据面缺失且重建失败，已 fail-open 回滚")
+            return false
+        }
+        val ok = try {
+            rb.refreshRules()
+        } catch (t: Throwable) {
+            Log.w(TAG, "Root 规则原位更新异常: ${t.message}")
+            false
+        }
+        if (ok) {
+            notifyState(mode, true, "Root 规则已更新至 generation ${rb.activeGeneration}")
+            return true
+        }
+        currentModeInternal = null
+        stopWatchdog()
+        notifyState(null, false, "Root 规则更新失败，已 fail-open 回滚")
+        return false
+    }
+
     private fun startRoot(): Boolean {
+        if (!launchRoot(notifyOnMissing = true)) {
+            currentModeInternal = null
+            return false
+        }
+        currentModeInternal = BackendMode.ROOT_TRANSPARENT
+        startWatchdog()
+        notifyState(BackendMode.ROOT_TRANSPARENT, true, "Root 透明模式已启用")
+        return true
+    }
+
+    /**
+     * 真正拉起 Root 透明中继（不改 currentMode）。
+     * Xposed 模式会把它当 SNI 辅助层：LSPosed 只修 DNS，443 仍需分片才能过 GitHub。
+     */
+    private fun launchRoot(notifyOnMissing: Boolean): Boolean {
         val rb = rootBackend
         val engine = dnsEngine()
         val vp = pool()
         if (rb == null || engine == null || vp == null) {
             Log.w(TAG, "Root 后端组件不可用（root=$rb engine=$engine pool=$vp）")
-            notifyState(BackendMode.ROOT_TRANSPARENT, false, "Root 后端组件不可用")
+            if (notifyOnMissing) {
+                notifyState(BackendMode.ROOT_TRANSPARENT, false, "Root 后端组件不可用")
+            }
             return false
         }
-        // 互斥：切 root 前停 VPN
         if (vpnActiveCheck() || currentModeInternal == BackendMode.VPN) {
             try {
                 vpnStopRequest()
@@ -268,16 +433,15 @@ class BackendManager @JvmOverloads constructor(
             }
         }
 
-        // 按 scope 配置构造规则（空结果降级 ALL_APPS，绝不让 uid 为空的白名单拦截一切）
-        val scopeMode = settings.appScopeMode()
-        val packages = settings.scopedPackages()
-        val resolved = scopeResolver.resolveUids(scopeMode, packages)
-        if (resolved.degraded) {
-            Log.w(TAG, "scope 解析降级为 ALL_APPS（mode=$scopeMode）")
-        }
-        rb.configureScope { selfUid -> buildFirewallRules(selfUid, scopeMode, resolved.uids) }
+        if (!configureRootRules(rb, notifyOnMissing)) return false
 
-        val handler: (ByteArray) -> ByteArray? = { raw -> engine.handleQuery(raw) }
+        val handler: (ByteArray) -> ByteArray? = { raw ->
+            try {
+                engine.handleQuery(raw) ?: org.xiyu.githubdirect.core.dns.DnsPacketCodec.buildServFailResponse(raw)
+            } catch (t: Throwable) {
+                org.xiyu.githubdirect.core.dns.DnsPacketCodec.buildServFailResponse(raw)
+            }
+        }
         val realIp: (Int) -> ByteArray? = { vip -> vp.lookupReal(vip)?.v4 }
 
         val ok = try {
@@ -287,15 +451,81 @@ class BackendManager @JvmOverloads constructor(
             false
         }
         if (!ok || rb.state != BackendState.ACTIVE) {
-            currentModeInternal = null
-            notifyState(BackendMode.ROOT_TRANSPARENT, false, "Root 后端启动失败")
+            val failure = rb.lastFailure
+            val diagnostic = failure?.let { "${it.stage}: ${it.detail}" }.orEmpty()
+            Log.w(TAG, "Root 后端启动失败${diagnostic.takeIf { it.isNotBlank() }?.let { ": $it" }.orEmpty()}")
+            if (notifyOnMissing) {
+                notifyState(
+                    BackendMode.ROOT_TRANSPARENT,
+                    false,
+                    if (diagnostic.isBlank()) "Root 后端启动失败" else "Root 后端启动失败（$diagnostic）",
+                )
+            }
             return false
         }
         rootDnsHandler = handler
         rootResolveRealIp = realIp
-        currentModeInternal = BackendMode.ROOT_TRANSPARENT
-        startWatchdog()
-        notifyState(BackendMode.ROOT_TRANSPARENT, true, "Root 透明模式已启用")
+        return true
+    }
+
+    /** 重新解析能力/scope 并注入下一代规则构造器；不触碰正在运行的监听器。 */
+    private fun configureRootRules(rb: RootBackendControl, notifyOnMissing: Boolean): Boolean {
+        lastEmbeddedCaptureUids = emptySet()
+        val caps = try {
+            rootCapabilities()
+        } catch (t: Throwable) {
+            Log.w(TAG, "root 探测异常: ${t.message}")
+            null
+        }
+        if (caps?.requiredOk() != true) {
+            val missing = caps?.missingRequired()?.joinToString().orEmpty().ifBlank { "探测失败" }
+            Log.w(TAG, "root 探测未通过: missing=$missing caps=$caps")
+            if (notifyOnMissing) {
+                notifyState(BackendMode.ROOT_TRANSPARENT, false, "Root 探测未通过：缺少 $missing")
+            }
+            return false
+        }
+
+        val scopeMode = settings.appScopeMode()
+        val packages = settings.scopedPackages()
+        val resolved = scopeResolver.resolveUids(scopeMode, packages)
+        lastScopeUids = resolved.uids
+        if (resolved.degraded) Log.w(TAG, "scope 中没有可解析 UID（mode=$scopeMode）")
+        if (scopeMode == AppScopeMode.SELECTED_APPS && resolved.uids.isEmpty()) {
+            if (notifyOnMissing) {
+                notifyState(
+                    BackendMode.ROOT_TRANSPARENT,
+                    false,
+                    "Root 作用域为空：请明确选择平台客户端、内置运行时宿主或浏览器",
+                )
+            }
+            return false
+        }
+        // Electron-like 宿主的全 TLS 捕获是第二层显式授权，并且只能是 SELECTED scope 的子集。
+        // 解析结果仍来自 PackageManager UID，绝不把包名直接拼进 shell。
+        val embeddedPackages = if (scopeMode == AppScopeMode.SELECTED_APPS) {
+            settings.embeddedTlsCapturePackages().intersect(packages)
+        } else {
+            emptySet()
+        }
+        val resolvedEmbeddedUids = if (embeddedPackages.isEmpty()) {
+            emptySet()
+        } else {
+            scopeResolver.resolveUids(AppScopeMode.SELECTED_APPS, embeddedPackages).uids
+                .intersect(resolved.uids)
+        }
+        val embeddedUids = if (
+            settings.isRealIpRedirectEnabled() && originalDestinationAvailable()
+        ) resolvedEmbeddedUids else emptySet()
+        lastEmbeddedCaptureUids = embeddedUids
+        rb.configureScope { selfUid ->
+            buildFirewallRules(selfUid, scopeMode, resolved.uids, embeddedUids, caps)
+        }
+        try {
+            onRootPrepare()
+        } catch (t: Throwable) {
+            Log.w(TAG, "Root 预备（hosts/binder）失败: ${t.message}")
+        }
         return true
     }
 
@@ -310,7 +540,11 @@ class BackendManager @JvmOverloads constructor(
         return true
     }
 
-    /** Xposed：不启动任何 backend，状态直接 ACTIVE（DNS 修复在目标进程生效）。 */
+    /**
+     * Xposed：DNS hook 在目标进程生效。
+     * LSPosed 设备通常具备 root，因此同时尝试启动透明中继，为启用平台处理 SNI 阻断。
+     * Root 拉不起来也不失败——退化为纯 DNS。
+     */
     private fun startXposedOnly(): Boolean {
         if (rootBackend?.state == BackendState.ACTIVE || currentModeInternal == BackendMode.ROOT_TRANSPARENT) {
             stopRoot()
@@ -322,17 +556,23 @@ class BackendManager @JvmOverloads constructor(
                 Log.w(TAG, "VPN 停止请求异常: ${t.message}")
             }
         }
+        val rootAssist = launchRoot(notifyOnMissing = false)
         currentModeInternal = BackendMode.XPOSED_ONLY
-        notifyState(BackendMode.XPOSED_ONLY, true, "Xposed 本地模式已启用")
+        if (rootAssist) startWatchdog()
+        notifyState(
+            BackendMode.XPOSED_ONLY,
+            true,
+            if (rootAssist) "Xposed + Root 透明中继已启用" else "Xposed 本地 DNS 已启用（无 SNI 分片）",
+        )
         return true
     }
 
-    private fun stopRoot() {
+    private fun stopRoot(cleanupStale: Boolean = false) {
         stopWatchdog()
         rootDnsHandler = null
         rootResolveRealIp = null
         try {
-            rootBackend?.stop()
+            if (cleanupStale) rootBackend?.cleanupStaleInstallation() else rootBackend?.stop()
         } catch (t: Throwable) {
             Log.w(TAG, "Root 停止异常: ${t.message}")
         }
@@ -344,7 +584,9 @@ class BackendManager @JvmOverloads constructor(
      *  与 start/stop 串行化：修复期间用户切换模式不会交错安装过期规则。 */
     @Synchronized
     internal fun watchdogTick() {
-        if (currentModeInternal != BackendMode.ROOT_TRANSPARENT) return
+        val watchingRoot = currentModeInternal == BackendMode.ROOT_TRANSPARENT
+                || (currentModeInternal == BackendMode.XPOSED_ONLY && rootBackend?.state == BackendState.ACTIVE)
+        if (!watchingRoot) return
         val rb = rootBackend ?: return
 
         val healthy = try {
@@ -367,7 +609,7 @@ class BackendManager @JvmOverloads constructor(
             repaired = false
         }
         if (repaired) {
-            notifyState(BackendMode.ROOT_TRANSPARENT, true, "watchdog 修复成功")
+            notifyState(currentModeInternal, true, "watchdog 修复成功")
             return
         }
 
@@ -400,19 +642,37 @@ class BackendManager @JvmOverloads constructor(
 
     /**
      * scope → FirewallRules（uid 全部来自 PackageManager，数字，绝无用户输入拼接）。
-     * ALL_APPS / 解析为空 → 全量；SELECTED → 白名单子链；EXCLUDED → 叠加排除（上限截断防御）。
+     * ALL_APPS → 全量；SELECTED 空集合 → 不接管；EXCLUDED 空集合 → 不排除。
      */
-    private fun buildFirewallRules(selfUid: Int, mode: AppScopeMode, uids: Set<Int>): FirewallRules {
-        if (mode == AppScopeMode.ALL_APPS || uids.isEmpty()) {
-            return FirewallRules(selfUid = selfUid)
-        }
+    private fun buildFirewallRules(
+        selfUid: Int,
+        mode: AppScopeMode,
+        uids: Set<Int>,
+        embeddedCaptureUids: Set<Int>,
+        capabilities: RootCapabilities,
+    ): FirewallRules {
         if (mode == AppScopeMode.EXCLUDED_APPS && uids.size > FirewallRules.MAX_EXCLUDED_UIDS) {
             Log.w(TAG, "EXCLUDED scope 超出上限(${FirewallRules.MAX_EXCLUDED_UIDS})，截断")
         }
+        val snapshot = routeSnapshotProvider()
+        val enableRealRedirect = settings.isRealIpRedirectEnabled() && originalDestinationAvailable()
+        val effectiveScope = when (mode) {
+            AppScopeMode.ALL_APPS -> null
+            AppScopeMode.EXCLUDED_APPS -> uids.take(FirewallRules.MAX_EXCLUDED_UIDS).toSet()
+            AppScopeMode.SELECTED_APPS -> uids.take(MAX_SELECTED_UIDS).toSet()
+        }
         return FirewallRules(
             selfUid = selfUid,
-            scopeUids = uids.take(FirewallRules.MAX_EXCLUDED_UIDS).toSet(),
+            scopeUids = effectiveScope,
             scopeInclude = mode == AppScopeMode.SELECTED_APPS,
+            fullTlsCaptureUids = if (enableRealRedirect) embeddedCaptureUids else emptySet(),
+            directDestinations = snapshot.interceptDestinations(),
+            enableRealIpRedirect = enableRealRedirect,
+            enableIpv6Redirect = capabilities.ipv6Netfilter,
+            useIpSet = capabilities.ipset,
+            rejectUdp443 = capabilities.rejectTarget,
+            rejectIpv6Udp443 = capabilities.ipv6RejectTarget,
+            generation = snapshot.generation,
         )
     }
 
@@ -430,6 +690,8 @@ class BackendManager @JvmOverloads constructor(
         private const val TAG = "BackendManager"
         const val WATCHDOG_INTERVAL_MS = 30_000L
         const val PROBE_CACHE_MS = 60_000L
+        const val PROBE_FAIL_CACHE_MS = 5_000L
+        const val MAX_SELECTED_UIDS = 32
 
         @Volatile
         private var instance: BackendManager? = null
@@ -441,10 +703,13 @@ class BackendManager @JvmOverloads constructor(
             synchronized(this) {
                 instance?.let { return it }
                 val ctx = context.applicationContext
+                val shell = RootShell()
+                val appUid = android.os.Process.myUid()
+                val probe = RootCapabilityProbe(shell, appUid)
                 val manager = BackendManager(
                     settings = DirectEngine.settings() ?: AndroidSettingsStore(ctx),
-                    rootBackend = RootBackendAdapter(),
-                    capProbe = RootCapabilityProbe(RootShell()),
+                    rootBackend = RootBackendAdapter(shell = shell, capabilities = probe),
+                    capProbe = probe,
                     scopeResolver = PackageScopeResolver(ctx),
                     dnsEngine = { DirectEngine.dnsEngine() },
                     pool = { DirectEngine.pool() },
@@ -457,6 +722,10 @@ class BackendManager @JvmOverloads constructor(
                         } catch (t: Throwable) {
                             Log.w(TAG, "VPN 停止请求失败: ${t.message}")
                         }
+                    },
+                    onRootPrepare = {
+                        DirectEngine.ensureInit(ctx, true)
+                        (DirectEngine.binder() as? org.xiyu.githubdirect.vpn.VpnNetworkBinder)?.start()
                     },
                 )
                 instance = manager

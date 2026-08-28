@@ -124,4 +124,25 @@ class RuleRegistryTest {
         )
         assertNull(registry.match("example.org"))
     }
+
+    @Test
+    fun `同profile下TLS_FRAGMENT支配CLEAN_DNS后缀`() {
+        val registry = buildRegistry(
+            InMemorySettingsStore(),
+            profile(
+                "github",
+                10,
+                suffixRule(".github.com", TransportPolicy.CLEAN_DNS),
+                exactRule("github.com", TransportPolicy.TLS_FRAGMENT_RELAY),
+            ),
+        )
+        assertEquals(
+            TransportPolicy.TLS_FRAGMENT_RELAY,
+            registry.match("github.com")!!.policy.transport,
+        )
+        assertEquals(
+            TransportPolicy.CLEAN_DNS,
+            registry.match("www.github.com")!!.policy.transport,
+        )
+    }
 }

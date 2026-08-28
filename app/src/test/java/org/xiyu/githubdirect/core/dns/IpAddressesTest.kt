@@ -2,7 +2,9 @@ package org.xiyu.githubdirect.core.dns
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class IpAddressesTest {
@@ -55,6 +57,30 @@ class IpAddressesTest {
             IpAddresses.ipv6ToString(IpAddresses.parseIpv6("2606:50c0::1")!!))
         assertEquals("2001:db8:0:0:0:0:0:1",
             IpAddresses.ipv6ToString(IpAddresses.parseIpv6("2001:db8::1")!!))
+    }
+
+    @Test
+    fun `污染与私网地址判定`() {
+        assertTrue(IpAddresses.isBogonOrPoisoned(IpAddresses.parseIpv4("127.0.0.1")!!))
+        assertTrue(IpAddresses.isBogonOrPoisoned(IpAddresses.parseIpv4("0.0.0.0")!!))
+        assertTrue(IpAddresses.isBogonOrPoisoned(IpAddresses.parseIpv4("10.0.0.1")!!))
+        assertTrue(IpAddresses.isBogonOrPoisoned(IpAddresses.parseIpv4("100.64.0.1")!!))
+        assertTrue(IpAddresses.isBogonOrPoisoned(IpAddresses.parseIpv4("192.168.1.1")!!))
+        assertTrue(IpAddresses.isBogonOrPoisoned(IpAddresses.parseIpv4("192.0.0.1")!!))
+        assertTrue(IpAddresses.isBogonOrPoisoned(IpAddresses.parseIpv4("192.0.2.1")!!))
+        assertTrue(IpAddresses.isBogonOrPoisoned(IpAddresses.parseIpv4("198.18.0.1")!!))
+        assertTrue(IpAddresses.isBogonOrPoisoned(IpAddresses.parseIpv4("198.51.100.1")!!))
+        assertTrue(IpAddresses.isBogonOrPoisoned(IpAddresses.parseIpv4("203.0.113.1")!!))
+        assertTrue(IpAddresses.isBogonOrPoisoned(IpAddresses.parseIpv4("240.0.0.1")!!))
+        assertFalse(IpAddresses.isBogonOrPoisoned(IpAddresses.parseIpv4("140.82.112.3")!!))
+        assertFalse(IpAddresses.isBogonOrPoisoned(IpAddresses.parseIpv4("192.0.66.2")!!))
+        assertFalse(IpAddresses.isBogonOrPoisoned(IpAddresses.parseIpv4("8.8.8.8")!!))
+        assertTrue(IpAddresses.isBogonOrPoisoned(IpAddresses.parseIpv6("::1")!!))
+        assertTrue(IpAddresses.isBogonOrPoisoned(IpAddresses.parseIpv6("::127.0.0.1")!!))
+        assertTrue(IpAddresses.isBogonOrPoisoned(IpAddresses.parseIpv6("2001:db8::1")!!))
+        assertTrue(IpAddresses.isBogonOrPoisoned(IpAddresses.parseIpv6("2001:20::1")!!))
+        assertFalse(IpAddresses.isBogonOrPoisoned(IpAddresses.parseIpv6("2001:1000::1")!!))
+        assertFalse(IpAddresses.isBogonOrPoisoned(IpAddresses.parseIpv6("2606:50c0::1")!!))
     }
 
     @Test

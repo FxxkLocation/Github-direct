@@ -6,5 +6,11 @@
 /local.properties
 build
 api-master
+/app/.cxx/
 # Kotlin 编译器错误日志（构建产物）
 /.kotlin/
+/device-evidence/
+/.codex-tmp/
+/.playwright-cli/
+/output/playwright/
+java_pid*.hprof

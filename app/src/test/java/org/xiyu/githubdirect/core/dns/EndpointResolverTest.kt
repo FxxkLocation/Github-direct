@@ -125,4 +125,71 @@ class EndpointResolverTest {
         )
         assertNull(resolver.resolveType("github.com", 1, null))
     }
+
+    @Test
+    fun `污染IP被丢弃并回退下一台`() {
+        val resolver = EndpointResolver(
+            FakeBinder { url ->
+                if (url.contains("s2")) {
+                    v4Json
+                } else {
+                    """{"Status":0,"Answer":[{"type":1,"data":"127.0.0.1"}]}"""
+                }
+            },
+            servers = listOf("http://s1", "http://s2"),
+        )
+        val r = resolver.resolve("youtube.com", null)
+        assertNotNull(r)
+        assertEquals("140.82.112.3", IpAddresses.ipv4ToString(r!!.v4[0]))
+    }
+
+    @Test
+    fun `wire候选发现隔离可信解析与污染观察器视角`() {
+        val trusted = WireDohClient.WireEndpoint(
+            "1.1.1.1",
+            "trusted.test",
+            resolverId = "trusted",
+        )
+        val observer = WireDohClient.WireEndpoint(
+            "2.2.2.2",
+            "observer.test",
+            resolverId = "observer",
+            trustedForAnswers = false,
+        )
+        val wire = WireDohClient(
+            endpoints = listOf(trusted, observer),
+            transport = { endpoint, query, _ ->
+                val address = IpAddresses.parseIpAddress(
+                    if (endpoint.trustedForAnswers) "142.251.156.119" else "157.240.7.20",
+                )!!
+                DnsPacketCodec.buildDnsResponse(
+                    query,
+                    DnsPacketCodec.getQuestionEnd(query),
+                    listOf(address),
+                    1,
+                )
+            },
+        )
+        val resolver = EndpointResolver(
+            FakeBinder { null },
+            wireClient = wire,
+            mergeIndependentWireAnswers = true,
+        )
+
+        val normalAddresses = resolver.resolveType("www.google.com", 1, null)!!
+            .mapTo(LinkedHashSet(), IpAddresses::ipv4ToString)
+        assertEquals(setOf("142.251.156.119"), normalAddresses)
+
+        val discovery = resolver.discover("www.google.com", null)!!
+        assertEquals(
+            setOf("142.251.156.119"),
+            discovery.trusted.v4.mapTo(LinkedHashSet(), IpAddresses::ipv4ToString),
+        )
+        assertEquals(
+            setOf("157.240.7.20"),
+            discovery.observed.v4.mapTo(LinkedHashSet(), IpAddresses::ipv4ToString),
+        )
+        assertTrue(discovery.trustedResponseObserved)
+        assertTrue(discovery.observerResponseObserved)
+    }
 }

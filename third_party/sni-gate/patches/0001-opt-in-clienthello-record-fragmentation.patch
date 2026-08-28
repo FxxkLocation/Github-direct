@@ -1,0 +1,708 @@
+diff --git a/src/client_hello_fragment.rs b/src/client_hello_fragment.rs
+new file mode 100644
+index 0000000..359a962
+--- /dev/null
++++ b/src/client_hello_fragment.rs
+@@ -0,0 +1,503 @@
++//! Bounded, opt-in transformation of the first outbound TLS ClientHello.
++//!
++//! The handshake bytes are not modified. Only TLS record boundaries and the
++//! corresponding TCP write boundaries change. Once the first ClientHello has
++//! been emitted, the wrapper is a transparent stream. Parsing failures are
++//! fail-closed because silently sending an unfragmented hello would violate an
++//! explicitly configured route policy.
++
++use std::future::Future;
++use std::io;
++use std::ops::Range;
++use std::pin::Pin;
++use std::task::{Context, Poll};
++use std::time::Duration;
++
++use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
++use tokio::time::{sleep, Sleep};
++
++const TLS_HANDSHAKE: u8 = 0x16;
++const CLIENT_HELLO: u8 = 0x01;
++const MAX_CLIENT_HELLO: usize = 64 * 1024;
++const MAX_RECORD_PAYLOAD: usize = u16::MAX as usize;
++const SNI_FRAGMENT_BYTES: usize = 3;
++const SIDE_FRAGMENT_PARTS: usize = 9;
++const WRITE_INTERVAL: Duration = Duration::from_millis(8);
++
++#[derive(Debug)]
++struct CompleteHello {
++    version: [u8; 2],
++    payload: Vec<u8>,
++    raw_remainder: Vec<u8>,
++    sni: Option<Range<usize>>,
++}
++
++#[derive(Debug, PartialEq, Eq)]
++enum Inspection {
++    NeedMore,
++    NotClientHello(&'static str),
++}
++
++#[derive(Debug)]
++struct FragmentedHello {
++    bytes: Vec<u8>,
++    write_ends: Vec<usize>,
++}
++
++fn inspect(data: &[u8]) -> Result<CompleteHello, Inspection> {
++    if data.is_empty() {
++        return Err(Inspection::NeedMore);
++    }
++    if data.len() > MAX_CLIENT_HELLO {
++        return Err(Inspection::NotClientHello("ClientHello exceeds 64 KiB"));
++    }
++    if data[0] != TLS_HANDSHAKE {
++        return Err(Inspection::NotClientHello(
++            "first TLS record is not Handshake",
++        ));
++    }
++
++    let mut payload = Vec::with_capacity(data.len());
++    let mut pos = 0usize;
++    let mut expected_handshake = None;
++    let mut version = [0u8; 2];
++
++    while pos < data.len() {
++        if pos + 5 > data.len() {
++            return Err(Inspection::NeedMore);
++        }
++        if data[pos] != TLS_HANDSHAKE {
++            return Err(Inspection::NotClientHello(
++                "non-Handshake record before ClientHello completed",
++            ));
++        }
++        let current_version = [data[pos + 1], data[pos + 2]];
++        if current_version[0] != 0x03 || !(0x01..=0x04).contains(&current_version[1]) {
++            return Err(Inspection::NotClientHello("invalid TLS record version"));
++        }
++        if payload.is_empty() {
++            version = current_version;
++        }
++        let len = u16_at(data, pos + 3) as usize;
++        if len == 0 || len > MAX_RECORD_PAYLOAD {
++            return Err(Inspection::NotClientHello("invalid TLS record length"));
++        }
++        let record_end = pos + 5 + len;
++        if record_end > data.len() {
++            return Err(Inspection::NeedMore);
++        }
++        payload.extend_from_slice(&data[pos + 5..record_end]);
++        if payload.first().copied() != Some(CLIENT_HELLO) {
++            return Err(Inspection::NotClientHello(
++                "first handshake message is not ClientHello",
++            ));
++        }
++        if expected_handshake.is_none() && payload.len() >= 4 {
++            let body_len =
++                ((payload[1] as usize) << 16) | ((payload[2] as usize) << 8) | payload[3] as usize;
++            let total = 4usize.saturating_add(body_len);
++            if !(4..=MAX_CLIENT_HELLO).contains(&total) {
++                return Err(Inspection::NotClientHello("invalid ClientHello length"));
++            }
++            expected_handshake = Some(total);
++        }
++        pos = record_end;
++
++        if let Some(expected) = expected_handshake {
++            if payload.len() >= expected {
++                let sni = parse_sni_range(&payload[..expected]);
++                return Ok(CompleteHello {
++                    version,
++                    payload,
++                    raw_remainder: data[pos..].to_vec(),
++                    sni,
++                });
++            }
++        }
++    }
++    Err(Inspection::NeedMore)
++}
++
++fn fragment(data: &[u8]) -> Result<Option<FragmentedHello>, io::Error> {
++    let hello = match inspect(data) {
++        Ok(hello) => hello,
++        Err(Inspection::NeedMore) => return Ok(None),
++        Err(Inspection::NotClientHello(reason)) => {
++            return Err(io::Error::new(io::ErrorKind::InvalidData, reason));
++        }
++    };
++
++    let mut ranges = Vec::new();
++    if let Some(sni) = hello.sni.clone() {
++        ranges.extend(split_side(0, sni.start));
++        let mut cursor = sni.start;
++        while cursor < sni.end {
++            let end = (cursor + SNI_FRAGMENT_BYTES).min(sni.end);
++            ranges.push(cursor..end);
++            cursor = end;
++        }
++        ranges.extend(split_side(sni.end, hello.payload.len()));
++    } else {
++        ranges.extend(split_side(0, hello.payload.len()));
++    }
++    ranges.retain(|r| !r.is_empty());
++    if ranges.len() < 2 {
++        return Err(io::Error::new(
++            io::ErrorKind::InvalidData,
++            "ClientHello is too small to fragment",
++        ));
++    }
++
++    let mut bytes = Vec::with_capacity(data.len() + ranges.len() * 5);
++    let mut write_ends = Vec::with_capacity(ranges.len() + 1);
++    for range in ranges {
++        write_record(&mut bytes, hello.version, &hello.payload[range]);
++        write_ends.push(bytes.len());
++    }
++    if !hello.raw_remainder.is_empty() {
++        bytes.extend_from_slice(&hello.raw_remainder);
++        write_ends.push(bytes.len());
++    }
++    Ok(Some(FragmentedHello { bytes, write_ends }))
++}
++
++fn parse_sni_range(handshake: &[u8]) -> Option<Range<usize>> {
++    if handshake.len() < 4 + 34 || handshake[0] != CLIENT_HELLO {
++        return None;
++    }
++    let mut pos = 4 + 34;
++    let session_len = *handshake.get(pos)? as usize;
++    pos = pos.checked_add(1 + session_len)?;
++    let cipher_len = u16_slice(handshake, pos)? as usize;
++    pos = pos.checked_add(2 + cipher_len)?;
++    let compression_len = *handshake.get(pos)? as usize;
++    pos = pos.checked_add(1 + compression_len)?;
++    let extensions_len = u16_slice(handshake, pos)? as usize;
++    pos = pos.checked_add(2)?;
++    let extensions_end = pos.checked_add(extensions_len)?;
++    if extensions_end > handshake.len() {
++        return None;
++    }
++
++    while pos + 4 <= extensions_end {
++        let extension_type = u16_slice(handshake, pos)?;
++        let extension_len = u16_slice(handshake, pos + 2)? as usize;
++        let start = pos + 4;
++        let end = start.checked_add(extension_len)?;
++        if end > extensions_end {
++            return None;
++        }
++        if extension_type == 0 && extension_len >= 5 {
++            let list_len = u16_slice(handshake, start)? as usize;
++            let list_end = (start + 2).checked_add(list_len)?;
++            if list_end > end {
++                return None;
++            }
++            let mut name_pos = start + 2;
++            while name_pos + 3 <= list_end {
++                let name_type = handshake[name_pos];
++                let name_len = u16_slice(handshake, name_pos + 1)? as usize;
++                let value_start = name_pos + 3;
++                let value_end = value_start.checked_add(name_len)?;
++                if value_end > list_end {
++                    return None;
++                }
++                if name_type == 0 && name_len > 0 {
++                    return Some(value_start..value_end);
++                }
++                name_pos = value_end;
++            }
++        }
++        pos = end;
++    }
++    None
++}
++
++fn split_side(start: usize, end: usize) -> Vec<Range<usize>> {
++    let len = end.saturating_sub(start);
++    if len == 0 {
++        return Vec::new();
++    }
++    let part_len = len.div_ceil(SIDE_FRAGMENT_PARTS).max(1);
++    let mut out = Vec::with_capacity(SIDE_FRAGMENT_PARTS);
++    let mut cursor = start;
++    while cursor < end {
++        let next = (cursor + part_len).min(end);
++        out.push(cursor..next);
++        cursor = next;
++    }
++    out
++}
++
++fn write_record(out: &mut Vec<u8>, version: [u8; 2], payload: &[u8]) {
++    debug_assert!(!payload.is_empty() && payload.len() <= MAX_RECORD_PAYLOAD);
++    out.push(TLS_HANDSHAKE);
++    out.extend_from_slice(&version);
++    out.extend_from_slice(&(payload.len() as u16).to_be_bytes());
++    out.extend_from_slice(payload);
++}
++
++fn u16_at(data: &[u8], pos: usize) -> u16 {
++    u16::from_be_bytes([data[pos], data[pos + 1]])
++}
++
++fn u16_slice(data: &[u8], pos: usize) -> Option<u16> {
++    Some(u16::from_be_bytes([*data.get(pos)?, *data.get(pos + 1)?]))
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++enum Phase {
++    Collecting,
++    Sending,
++    Passthrough,
++}
++
++/// Async I/O wrapper used underneath tokio-rustls. Reads also drive pending
++/// transformed writes because a TLS handshake may switch directly from write to
++/// read after the wrapper accepted bytes into its bounded buffer.
++pub(crate) struct ClientHelloFragmentingIo<S> {
++    inner: S,
++    phase: Phase,
++    collected: Vec<u8>,
++    pending: Vec<u8>,
++    write_ends: Vec<usize>,
++    pending_pos: usize,
++    write_index: usize,
++    delay: Option<Pin<Box<Sleep>>>,
++}
++
++impl<S> ClientHelloFragmentingIo<S> {
++    pub(crate) fn new(inner: S, enabled: bool) -> Self {
++        Self {
++            inner,
++            phase: if enabled {
++                Phase::Collecting
++            } else {
++                Phase::Passthrough
++            },
++            collected: Vec::new(),
++            pending: Vec::new(),
++            write_ends: Vec::new(),
++            pending_pos: 0,
++            write_index: 0,
++            delay: None,
++        }
++    }
++}
++
++impl<S: AsyncRead + AsyncWrite + Unpin> ClientHelloFragmentingIo<S> {
++    fn prepare_if_complete(&mut self) -> io::Result<()> {
++        let Some(fragmented) = fragment(&self.collected)? else {
++            return Ok(());
++        };
++        self.pending = fragmented.bytes;
++        self.write_ends = fragmented.write_ends;
++        self.collected.clear();
++        self.phase = Phase::Sending;
++        Ok(())
++    }
++
++    fn poll_pending(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
++        while self.phase == Phase::Sending {
++            if let Some(delay) = self.delay.as_mut() {
++                if delay.as_mut().poll(cx).is_pending() {
++                    return Poll::Pending;
++                }
++                self.delay = None;
++            }
++
++            let Some(&end) = self.write_ends.get(self.write_index) else {
++                self.pending.clear();
++                self.write_ends.clear();
++                self.phase = Phase::Passthrough;
++                break;
++            };
++            match Pin::new(&mut self.inner).poll_write(cx, &self.pending[self.pending_pos..end]) {
++                Poll::Pending => return Poll::Pending,
++                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
++                Poll::Ready(Ok(0)) => {
++                    return Poll::Ready(Err(io::Error::new(
++                        io::ErrorKind::WriteZero,
++                        "failed to write fragmented ClientHello",
++                    )));
++                }
++                Poll::Ready(Ok(n)) => {
++                    self.pending_pos += n;
++                    if self.pending_pos == end {
++                        self.write_index += 1;
++                        if self.write_index < self.write_ends.len() {
++                            self.delay = Some(Box::pin(sleep(WRITE_INTERVAL)));
++                            cx.waker().wake_by_ref();
++                            return Poll::Pending;
++                        }
++                    }
++                }
++            }
++        }
++        Poll::Ready(Ok(()))
++    }
++}
++
++impl<S: AsyncRead + AsyncWrite + Unpin> AsyncRead for ClientHelloFragmentingIo<S> {
++    fn poll_read(
++        mut self: Pin<&mut Self>,
++        cx: &mut Context<'_>,
++        buf: &mut ReadBuf<'_>,
++    ) -> Poll<io::Result<()>> {
++        if self.phase == Phase::Sending {
++            match self.poll_pending(cx) {
++                Poll::Pending => return Poll::Pending,
++                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
++                Poll::Ready(Ok(())) => {}
++            }
++        }
++        Pin::new(&mut self.inner).poll_read(cx, buf)
++    }
++}
++
++impl<S: AsyncRead + AsyncWrite + Unpin> AsyncWrite for ClientHelloFragmentingIo<S> {
++    fn poll_write(
++        mut self: Pin<&mut Self>,
++        cx: &mut Context<'_>,
++        buf: &[u8],
++    ) -> Poll<io::Result<usize>> {
++        if self.phase == Phase::Sending {
++            match self.poll_pending(cx) {
++                Poll::Pending => return Poll::Pending,
++                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
++                Poll::Ready(Ok(())) => {}
++            }
++        }
++        if self.phase == Phase::Passthrough {
++            return Pin::new(&mut self.inner).poll_write(cx, buf);
++        }
++        if buf.is_empty() {
++            return Poll::Ready(Ok(0));
++        }
++        if self.collected.len().saturating_add(buf.len()) > MAX_CLIENT_HELLO {
++            return Poll::Ready(Err(io::Error::new(
++                io::ErrorKind::InvalidData,
++                "ClientHello exceeds 64 KiB",
++            )));
++        }
++        self.collected.extend_from_slice(buf);
++        if let Err(e) = self.prepare_if_complete() {
++            return Poll::Ready(Err(e));
++        }
++        Poll::Ready(Ok(buf.len()))
++    }
++
++    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
++        if self.phase == Phase::Collecting && !self.collected.is_empty() {
++            if let Err(e) = self.prepare_if_complete() {
++                return Poll::Ready(Err(e));
++            }
++            if self.phase == Phase::Collecting {
++                return Poll::Ready(Err(io::Error::new(
++                    io::ErrorKind::UnexpectedEof,
++                    "flush requested before a complete ClientHello was buffered",
++                )));
++            }
++        }
++        if self.phase == Phase::Sending {
++            match self.poll_pending(cx) {
++                Poll::Pending => return Poll::Pending,
++                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
++                Poll::Ready(Ok(())) => {}
++            }
++        }
++        Pin::new(&mut self.inner).poll_flush(cx)
++    }
++
++    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
++        match self.as_mut().poll_flush(cx) {
++            Poll::Pending => Poll::Pending,
++            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
++            Poll::Ready(Ok(())) => Pin::new(&mut self.inner).poll_shutdown(cx),
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use rustls::pki_types::ServerName;
++    use rustls::{ClientConfig, ClientConnection, RootCertStore};
++    use std::sync::Arc;
++    use tokio::io::{AsyncReadExt, AsyncWriteExt};
++
++    fn rustls_client_hello(host: &str) -> Vec<u8> {
++        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
++        let config = ClientConfig::builder()
++            .with_root_certificates(RootCertStore::empty())
++            .with_no_client_auth();
++        let name = ServerName::try_from(host.to_string()).unwrap();
++        let mut client = ClientConnection::new(Arc::new(config), name).unwrap();
++        let mut out = Vec::new();
++        while client.wants_write() {
++            client.write_tls(&mut out).unwrap();
++        }
++        out
++    }
++
++    fn record_payloads(data: &[u8]) -> (Vec<u8>, usize) {
++        let mut payload = Vec::new();
++        let mut pos = 0;
++        let mut records = 0;
++        while pos + 5 <= data.len() && data[pos] == TLS_HANDSHAKE {
++            let len = u16_at(data, pos + 3) as usize;
++            let end = pos + 5 + len;
++            assert!(end <= data.len());
++            payload.extend_from_slice(&data[pos + 5..end]);
++            records += 1;
++            pos = end;
++        }
++        (payload, records)
++    }
++
++    #[test]
++    fn fragmentation_preserves_client_hello_bytes_and_splits_sni() {
++        let original = rustls_client_hello("www.youtube.com");
++        let inspected = inspect(&original).unwrap();
++        let sni = inspected.sni.clone().expect("SNI range");
++        assert_eq!(&inspected.payload[sni], b"www.youtube.com");
++
++        let fragmented = fragment(&original).unwrap().unwrap();
++        let (payload, records) = record_payloads(&fragmented.bytes);
++        let (original_payload, original_records) = record_payloads(&original);
++        assert_eq!(payload, original_payload);
++        assert!(records > original_records + 3);
++        assert_eq!(fragmented.write_ends.last(), Some(&fragmented.bytes.len()));
++    }
++
++    #[test]
++    fn partial_client_hello_waits_and_malformed_input_fails_closed() {
++        let original = rustls_client_hello("example.com");
++        assert!(fragment(&original[..8]).unwrap().is_none());
++        let err = fragment(b"not tls").unwrap_err();
++        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
++    }
++
++    #[tokio::test]
++    async fn async_wrapper_buffers_partial_input_then_becomes_transparent() {
++        let original = rustls_client_hello("www.youtube.com");
++        let (transport, mut peer) = tokio::io::duplex(128 * 1024);
++        let mut wrapped = ClientHelloFragmentingIo::new(transport, true);
++        let split = original.len() / 3;
++
++        wrapped.write_all(&original[..split]).await.unwrap();
++        wrapped.write_all(&original[split..]).await.unwrap();
++        wrapped.flush().await.unwrap();
++        wrapped.write_all(b"post-handshake").await.unwrap();
++        wrapped.shutdown().await.unwrap();
++
++        let mut received = Vec::new();
++        peer.read_to_end(&mut received).await.unwrap();
++        assert!(received.ends_with(b"post-handshake"));
++        let hello_end = received.len() - b"post-handshake".len();
++        let (payload, records) = record_payloads(&received[..hello_end]);
++        let (original_payload, original_records) = record_payloads(&original);
++        assert_eq!(payload, original_payload);
++        assert!(records > original_records + 3);
++    }
++}
+diff --git a/src/config.rs b/src/config.rs
+index ca5f56c..024b56c 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -272,6 +272,12 @@ pub struct Route {
+     #[serde(default)]
+     pub override_sni: Option<String>,
+ 
++    /// Split the first upstream TLS ClientHello across several TLS records and
++    /// paced TCP writes. This is only valid for `type = "tls"`; certificate and
++    /// hostname verification are unchanged.
++    #[serde(default)]
++    pub fragment_client_hello: Option<bool>,
++
+     /// ECH settings. Required in practice for `type = "ech"`.
+     #[serde(default)]
+     pub ech: Option<EchConfig>,
+@@ -425,6 +431,10 @@ pub struct Template {
+     #[serde(default)]
+     pub override_sni: Option<String>,
+ 
++    /// Route default for [`Route::fragment_client_hello`].
++    #[serde(default)]
++    pub fragment_client_hello: Option<bool>,
++
+     /// Pinned local termination cert/key (both or neither, after resolution).
+     #[serde(default)]
+     pub cert_file: Option<PathBuf>,
+@@ -1893,6 +1903,14 @@ impl Route {
+         // `override_sni` needs no validation: every value is meaningful. A blank
+         // one is an explicit "send no SNI extension" (see `SniPolicy`), not the
+         // mistake it was once treated as.
++        if self.fragment_client_hello(tpl)
++            && self.route_type.or(tpl.and_then(|t| t.route_type)) != Some(RouteType::Tls)
++        {
++            return Err(ConfigError::Invalid(format!(
++                "route {}: fragment_client_hello is only valid for a `tls` route",
++                self.label()
++            )));
++        }
+         Ok(())
+     }
+ 
+@@ -1910,6 +1928,14 @@ impl Route {
+                 .or_else(|| tpl.and_then(|t| t.override_sni.as_deref())),
+         )
+     }
++
++    /// Whether to transform only the first upstream ClientHello. Presence is
++    /// resolved route-first so a route may disable a template default.
++    pub fn fragment_client_hello(&self, tpl: Option<&Template>) -> bool {
++        self.fragment_client_hello
++            .or_else(|| tpl.and_then(|t| t.fragment_client_hello))
++            .unwrap_or(false)
++    }
+ }
+ 
+ /// Parse an upstream address into (host, port).
+@@ -2911,6 +2937,52 @@ addr = "0.0.0.0:443"
+         assert_eq!(l.routes[1].sni_policy(tpl2), SniPolicy::Omit);
+     }
+ 
++    #[test]
++    fn client_hello_fragmentation_is_tls_only_and_route_overrides_template() {
++        let cfg = parse(
++            r#"
++[templates.fragmented]
++type = "tls"
++fragment_client_hello = true
++
++[[listener]]
++addr = "0.0.0.0:443"
++  [[listener.route]]
++  name = "inherits"
++  use = "fragmented"
++  match_sni = ["a.example"]
++
++  [[listener.route]]
++  name = "disables"
++  use = "fragmented"
++  match_sni = ["b.example"]
++  fragment_client_hello = false
++"#,
++        );
++        cfg.validate().unwrap();
++        let routes = &cfg.listeners[0].routes;
++        let first_tpl = cfg.template_for(&routes[0].use_template).unwrap();
++        let second_tpl = cfg.template_for(&routes[1].use_template).unwrap();
++        assert!(routes[0].fragment_client_hello(first_tpl));
++        assert!(!routes[1].fragment_client_hello(second_tpl));
++
++        for route_type in ["ech", "http", "raw"] {
++            let invalid = parse(&format!(
++                r#"
++[[listener]]
++addr = "0.0.0.0:443"
++  [[listener.route]]
++  name = "invalid"
++  type = "{route_type}"
++  match_sni = ["invalid.example"]
++  fragment_client_hello = true
++"#
++            ));
++            let err = invalid.validate().unwrap_err().to_string();
++            assert!(err.contains("fragment_client_hello"), "{route_type}: {err}");
++        }
++    }
++
+     // -----------------------------------------------------------------------
+     // HTTP/2 field-by-field inheritance
+     // -----------------------------------------------------------------------
+diff --git a/src/main.rs b/src/main.rs
+index ed8a3de..5c58f50 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -7,6 +7,7 @@
+ 
+ mod ca;
+ mod certscope;
++mod client_hello_fragment;
+ pub mod config;
+ mod dns;
+ mod dns_resolvers;
+@@ -614,6 +615,7 @@ fn build_route(
+             upstream_host: host,
+             upstream_port: port,
+             sni_policy,
++            fragment_client_hello: route.fragment_client_hello(rt_tpl),
+             http2: eff_http2.enabled,
+             require_ech: eff.require_ech,
+             max_retries: eff_ech.max_retries,
+diff --git a/src/proxy.rs b/src/proxy.rs
+index 5588522..3dc7c80 100644
+--- a/src/proxy.rs
++++ b/src/proxy.rs
+@@ -44,6 +44,7 @@ use tokio::time::timeout;
+ use tokio_rustls::{LazyConfigAcceptor, TlsConnector};
+ use tracing::{debug, info, warn};
+ 
++use crate::client_hello_fragment::ClientHelloFragmentingIo;
+ use crate::config::{AddressFamily, FailPolicy, RouteType, SniPolicy};
+ use crate::ech::EchProvider;
+ use crate::nat64::Nat64Prefix;
+@@ -64,6 +65,8 @@ pub struct RouteRuntime {
+     /// What SNI to present upstream: reflect the inbound name, force a fixed
+     /// one, or send no `server_name` extension at all.
+     pub sni_policy: SniPolicy,
++    /// Transform and pace only the first plain-TLS ClientHello sent upstream.
++    pub fragment_client_hello: bool,
+     /// Allow HTTP/2 on this route. Always false for `raw`.
+     pub http2: bool,
+     pub require_ech: bool,
+@@ -542,12 +545,14 @@ async fn dial(addr: SocketAddr, connect_timeout: Duration) -> Result<TcpStream>
+ /// it is also **sent** as an SNI extension depends on the route's
+ /// [`SniPolicy`]: `Omit` clears `enable_sni`, so the handshake carries no
+ /// `server_name` while the certificate is still checked against that name.
++type UpstreamTls = tokio_rustls::client::TlsStream<ClientHelloFragmentingIo<TcpStream>>;
++
+ async fn dial_tls(
+     addr: SocketAddr,
+     server_name: &str,
+     rt: &RouteRuntime,
+     alpn: &[Vec<u8>],
+-) -> Result<tokio_rustls::client::TlsStream<TcpStream>> {
++) -> Result<UpstreamTls> {
+     let mut config = plain_tls_config(rt.root_store.clone());
+     config.alpn_protocols = alpn.to_vec();
+     if rt.sni_policy == SniPolicy::Omit {
+@@ -557,7 +562,8 @@ async fn dial_tls(
+     let name = ServerName::try_from(server_name.to_string())
+         .map_err(|_| anyhow!("invalid upstream SNI {server_name:?}"))?;
+     let tcp = dial(addr, rt.connect_timeout).await?;
+-    let tls = timeout(rt.connect_timeout, connector.connect(name, tcp))
++    let io = ClientHelloFragmentingIo::new(tcp, rt.fragment_client_hello);
++    let tls = timeout(rt.connect_timeout, connector.connect(name, io))
+         .await
+         .map_err(|_| anyhow!("upstream TLS handshake timed out"))?
+         .context("upstream TLS handshake")?;
+@@ -571,7 +577,7 @@ async fn dial_ech(
+     peer: SocketAddr,
+     rt: &RouteRuntime,
+     alpn: &[Vec<u8>],
+-) -> Result<tokio_rustls::client::TlsStream<TcpStream>> {
++) -> Result<UpstreamTls> {
+     let ech = rt
+         .ech
+         .as_ref()
+@@ -588,8 +594,9 @@ async fn dial_ech(
+             .context("assembling ECH client config")?;
+         let connector = TlsConnector::from(client.client_config.clone());
+         let tcp = dial(addr, rt.connect_timeout).await?;
++        let io = ClientHelloFragmentingIo::new(tcp, false);
+ 
+-        match timeout(rt.connect_timeout, connector.connect(name.clone(), tcp)).await {
++        match timeout(rt.connect_timeout, connector.connect(name.clone(), io)).await {
+             Ok(Ok(tls)) => {
+                 let status = tls.get_ref().1.ech_status();
+                 match (rt.require_ech, status) {
+

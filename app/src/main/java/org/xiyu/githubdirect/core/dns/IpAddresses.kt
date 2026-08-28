@@ -123,4 +123,61 @@ object IpAddresses {
             (value and 0xFF).toByte(),
         )
     }
+
+    /**
+     * 明显不可作为公网直连候选的特殊用途地址。
+     * 包括未指定、环回、私网、链路本地、共享地址、文档/基准测试、组播和保留网段。
+     */
+    @JvmStatic
+    fun isBogonOrPoisoned(addr: ByteArray): Boolean = when (addr.size) {
+        4 -> isBogonOrPoisonedV4(addr)
+        16 -> isBogonOrPoisonedV6(addr)
+        else -> true
+    }
+
+    private fun isBogonOrPoisonedV4(addr: ByteArray): Boolean {
+        val a = addr[0].toInt() and 0xFF
+        val b = addr[1].toInt() and 0xFF
+        val c = addr[2].toInt() and 0xFF
+        return when {
+            a == 0 || a == 10 || a == 127 -> true
+            a == 100 && b in 64..127 -> true // RFC 6598 shared address space
+            a == 169 && b == 254 -> true
+            a == 172 && b in 16..31 -> true
+            a == 192 && b == 0 && (c == 0 || c == 2) -> true // 192.0.0.0/24 + TEST-NET-1
+            a == 192 && b == 88 && c == 99 -> true // deprecated 6to4 relay anycast
+            a == 192 && b == 168 -> true
+            a == 198 && b in 18..19 -> true
+            a == 198 && b == 51 && c == 100 -> true // TEST-NET-2
+            a == 203 && b == 0 && c == 113 -> true // TEST-NET-3
+            a >= 224 -> true
+            else -> false
+        }
+    }
+
+    private fun isBogonOrPoisonedV6(addr: ByteArray): Boolean {
+        val firstTenZero = (0 until 10).all { addr[it].toInt() == 0 }
+        if (firstTenZero && addr[10] == 0xFF.toByte() && addr[11] == 0xFF.toByte()) {
+            return isBogonOrPoisonedV4(byteArrayOf(addr[12], addr[13], addr[14], addr[15]))
+        }
+        if ((0 until 12).all { addr[it].toInt() == 0 }) return true // ::/96, including :: and ::1
+        val b0 = addr[0].toInt() and 0xFF
+        val b1 = addr[1].toInt() and 0xFF
+        val b2 = addr[2].toInt() and 0xFF
+        val b3 = addr[3].toInt() and 0xFF
+        if (b0 == 0x01 && b1 == 0x00 && (2 until 8).all { addr[it].toInt() == 0 }) return true // 100::/64
+        if (b0 == 0x20 && b1 == 0x01 && b2 == 0x0D && b3 == 0xB8) return true // documentation
+        if (b0 == 0x20 && b1 == 0x01 && b2 == 0x00 && b3 == 0x02 &&
+            addr[4].toInt() == 0 && addr[5].toInt() == 0
+        ) return true // benchmarking
+        val orchidPrefix = b3 and 0xF0
+        if (b0 == 0x20 && b1 == 0x01 && b2 == 0x00 &&
+            (orchidPrefix == 0x10 || orchidPrefix == 0x20)
+        ) return true // ORCHIDv1/v2: 2001:10::/28 and 2001:20::/28
+        if (b0 == 0xFC || b0 == 0xFD) return true // fc00::/7
+        if (b0 == 0xFE && (b1 and 0xC0) == 0x80) return true // fe80::/10
+        if (b0 == 0xFE && (b1 and 0xC0) == 0xC0) return true // deprecated fec0::/10
+        if (b0 == 0xFF) return true
+        return false
+    }
 }

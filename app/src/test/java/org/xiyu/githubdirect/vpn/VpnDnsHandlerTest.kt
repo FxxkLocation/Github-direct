@@ -34,7 +34,7 @@ import org.xiyu.githubdirect.test.extractDnsResponse
  * VpnDnsHandler 薄壳测试（Phase 2）：UDP/IP 封装 + 引擎注入。
  * 策略语义本身在 SelectiveDnsEngineTest 全覆盖；这里验证：
  * - 引擎返回 null（上游全失败）→ 壳层回 SERVFAIL（§29，绝不 NXDOMAIN）
- * - 未命中/relay 非 A → raw 透传（原样返回上游响应）
+ * - 未命中域 → raw 透传；目标 relay 的 A/AAAA 不回退到可能受污染的 raw DNS
  */
 class VpnDnsHandlerTest {
 
@@ -49,7 +49,7 @@ class VpnDnsHandlerTest {
     private fun handler(upstream: FakeUpstream, vararg profiles: ServiceProfile): VpnDnsHandler {
         val registry = buildRegistry(InMemorySettingsStore(), *profiles)
         val resolver = EndpointResolver(FakeBinder({ null }), servers = listOf("http://fake.doh/"))
-        val wire = WireDohClient(transportOverride = { _, raw, _ ->
+        val wire = WireDohClient(transport = { _, raw, _ ->
             upstream.wireReceived.add(raw); upstream.wireBody(raw)
         })
         val plain = PlainDnsClient(queryOverride = { raw, _ ->
@@ -133,12 +133,9 @@ class VpnDnsHandlerTest {
     }
 
     @Test
-    fun `relay域AAAA查询raw转发不合成`() {
+    fun `relay域AAAA严格DoH失败返回SERVFAIL且不走raw`() {
         val up = FakeUpstream()
         val query = buildDnsQueryPacket("github.com", 28)
-        val rawQuery = extractDnsResponse(query)
-        val canned = DnsPacketCodec.buildEmptyResponse(rawQuery, DnsPacketCodec.getQuestionEnd(rawQuery))
-        up.wireBody = { canned }
         val h = handler(
             up,
             profile(
@@ -147,9 +144,8 @@ class VpnDnsHandlerTest {
             ),
         )
         val resp = extractDnsResponse(h.handle(query, 20)!!)
-        assertNotNull(resp)
-        assertEquals(canned.toList(), resp.toList()) // 上游响应原样透传
-        assertEquals(rawQuery.toList(), up.wireReceived[0].toList()) // 原始字节转发
+        assertEquals(2, dnsRcode(resp)) // 严格 DoH 不可用 → SERVFAIL
+        assertTrue(up.wireReceived.isEmpty()) // 目标域绝不降级到可能受污染的 raw DNS
     }
 
     @Test

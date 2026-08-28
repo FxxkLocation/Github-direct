@@ -17,8 +17,22 @@ interface NetworkBinder {
      */
     fun httpGet(url: String, connectTimeoutMs: Int, readTimeoutMs: Int): String?
 
+    /** 普通 HTTPS JSON/文本请求可覆盖 Accept/User-Agent；旧实现自动退化到无自定义头请求。 */
+    fun httpGet(
+        url: String,
+        connectTimeoutMs: Int,
+        readTimeoutMs: Int,
+        headers: Map<String, String>,
+    ): String? = httpGet(url, connectTimeoutMs, readTimeoutMs)
+
     /** 将 Socket 绑定到当前底层网络（无当前网络时 no-op）。 */
     fun bindSocket(socket: Socket)
+
+    /** 用于按网络隔离候选健康状态；实现不可用时返回 stable default。 */
+    fun networkKey(): String = "default"
+
+    /** 网络切换通知；返回值关闭后停止监听。 */
+    fun addNetworkChangeListener(listener: (String) -> Unit): java.io.Closeable? = null
 
     /** VPN 模式由 DnsVpnService 注入 VpnService::protect；Xposed 模式为 null。 */
     var protect: ((Socket) -> Boolean)?

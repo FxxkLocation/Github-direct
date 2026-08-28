@@ -1,0 +1,98 @@
+{
+  "version": 1,
+  "generation": 1,
+  "createdAt": 1787500800000,
+  "expiresAt": 0,
+  "metaCidrs": [
+    "192.30.252.0/22", "185.199.108.0/22", "140.82.112.0/20", "143.55.64.0/20",
+    "2a0a:a440::/29", "2606:50c0::/32",
+    "20.201.28.151/32", "20.205.243.166/32", "20.87.245.0/32", "4.237.22.38/32",
+    "4.228.31.150/32", "20.207.73.82/32", "20.27.177.113/32", "20.200.245.247/32",
+    "20.175.192.147/32", "20.233.83.145/32", "20.29.134.23/32", "20.199.39.232/32",
+    "20.217.135.5/32", "4.225.11.194/32", "4.208.26.197/32", "20.26.156.215/32",
+    "172.182.252.133/32", "4.249.131.164/32", "48.202.248.40/32", "48.204.201.5/32",
+    "20.201.28.148/32", "20.205.243.168/32", "20.87.245.6/32", "4.237.22.34/32",
+    "4.228.31.149/32", "20.207.73.85/32", "20.27.177.116/32", "20.200.245.245/32",
+    "20.175.192.149/32", "20.233.83.146/32", "20.29.134.17/32", "20.199.39.228/32",
+    "20.217.135.0/32", "4.225.11.201/32", "4.208.26.200/32", "20.26.156.210/32",
+    "172.182.252.137/32", "4.249.131.166/32", "48.202.248.39/32", "48.204.201.2/32",
+    "192.30.252.153/32", "192.30.252.154/32", "185.199.108.153/32", "185.199.109.153/32",
+    "185.199.110.153/32", "185.199.111.153/32", "2606:50c0:8000::153/128",
+    "2606:50c0:8001::153/128", "2606:50c0:8002::153/128", "2606:50c0:8003::153/128"
+  ],
+  "plans": [
+    {"domain":"github.com","endpointGroup":"web","candidates":[
+      {"address":"172.182.252.133","source":"BUNDLED","fetchedAt":1787500800000,"expiresAt":0,"latencyMs":0,"capability":"FRAGMENTED_TLS","failures":0,"backoffUntil":0,"interceptOnly":false},
+      {"address":"20.205.243.166","source":"BUNDLED","fetchedAt":1787500800000,"expiresAt":0,"latencyMs":0,"capability":"FRAGMENTED_TLS","failures":0,"backoffUntil":0,"interceptOnly":false},
+      {"address":"140.82.116.4","source":"HISTORICAL","fetchedAt":1787500800000,"expiresAt":0,"latencyMs":0,"capability":"FRAGMENTED_TLS","failures":0,"backoffUntil":0,"interceptOnly":false}
+    ]},
+    {"domain":"api.github.com","endpointGroup":"api","candidates":[
+      {"address":"140.82.116.6","source":"BUNDLED","fetchedAt":1787500800000,"expiresAt":0,"latencyMs":0,"capability":"FRAGMENTED_TLS","failures":0,"backoffUntil":0,"interceptOnly":false},
+      {"address":"20.205.243.168","source":"BUNDLED","fetchedAt":1787500800000,"expiresAt":0,"latencyMs":0,"capability":"FRAGMENTED_TLS","failures":0,"backoffUntil":0,"interceptOnly":false}
+    ]},
+    {"domain":"gist.github.com","endpointGroup":"web","candidates":[
+      {"address":"172.182.252.133","source":"BUNDLED","fetchedAt":1787500800000,"expiresAt":0,"latencyMs":0,"capability":"FRAGMENTED_TLS","failures":0,"backoffUntil":0,"interceptOnly":false},
+      {"address":"20.205.243.166","source":"BUNDLED","fetchedAt":1787500800000,"expiresAt":0,"latencyMs":0,"capability":"FRAGMENTED_TLS","failures":0,"backoffUntil":0,"interceptOnly":false}
+    ]},
+    {"domain":"codeload.github.com","endpointGroup":"web","candidates":[
+      {"address":"140.82.116.9","source":"BUNDLED","fetchedAt":1787500800000,"expiresAt":0,"latencyMs":0,"capability":"FRAGMENTED_TLS","failures":0,"backoffUntil":0,"interceptOnly":false},
+      {"address":"20.205.243.165","source":"HISTORICAL","fetchedAt":1787500800000,"expiresAt":0,"latencyMs":0,"capability":"FRAGMENTED_TLS","failures":0,"backoffUntil":0,"interceptOnly":false}
+    ]},
+    {"domain":"alive.github.com","endpointGroup":"web","candidates":[
+      {"address":"140.82.112.26","source":"BUNDLED","fetchedAt":1787500800000,"expiresAt":0,"latencyMs":0,"capability":"FRAGMENTED_TLS","failures":0,"backoffUntil":0,"interceptOnly":false},
+      {"address":"140.82.113.26","source":"BUNDLED","fetchedAt":1787500800000,"expiresAt":0,"latencyMs":0,"capability":"FRAGMENTED_TLS","failures":0,"backoffUntil":0,"interceptOnly":false}
+    ]},
+    {"domain":"central.github.com","endpointGroup":"web","candidates":[
+      {"address":"140.82.112.22","source":"BUNDLED","fetchedAt":1787500800000,"expiresAt":0,"latencyMs":0,"capability":"FRAGMENTED_TLS","failures":0,"backoffUntil":0,"interceptOnly":false},
+      {"address":"140.82.113.22","source":"BUNDLED","fetchedAt":1787500800000,"expiresAt":0,"latencyMs":0,"capability":"FRAGMENTED_TLS","failures":0,"backoffUntil":0,"interceptOnly":false}
+    ]},
+    {"domain":"collector.github.com","endpointGroup":"api","candidates":[
+      {"address":"140.82.112.21","source":"BUNDLED","fetchedAt":1787500800000,"expiresAt":0,"latencyMs":0,"capability":"FRAGMENTED_TLS","failures":0,"backoffUntil":0,"interceptOnly":false},
+      {"address":"140.82.113.21","source":"BUNDLED","fetchedAt":1787500800000,"expiresAt":0,"latencyMs":0,"capability":"FRAGMENTED_TLS","failures":0,"backoffUntil":0,"interceptOnly":false}
+    ]},
+    {"domain":"github.githubassets.com","endpointGroup":"assets","candidates":[
+      {"address":"185.199.108.215","source":"BUNDLED","fetchedAt":1787500800000,"expiresAt":0,"latencyMs":0,"capability":"FRAGMENTED_TLS","failures":0,"backoffUntil":0,"interceptOnly":false},
+      {"address":"185.199.109.215","source":"BUNDLED","fetchedAt":1787500800000,"expiresAt":0,"latencyMs":0,"capability":"FRAGMENTED_TLS","failures":0,"backoffUntil":0,"interceptOnly":false},
+      {"address":"185.199.110.215","source":"BUNDLED","fetchedAt":1787500800000,"expiresAt":0,"latencyMs":0,"capability":"FRAGMENTED_TLS","failures":0,"backoffUntil":0,"interceptOnly":false}
+    ]},
+    {"domain":"github.blog","endpointGroup":"web","candidates":[
+      {"address":"192.0.66.2","source":"BUNDLED","fetchedAt":1787500800000,"expiresAt":0,"latencyMs":0,"capability":"DIRECT_TLS","failures":0,"backoffUntil":0,"interceptOnly":false}
+    ]},
+    {"domain":"copilot-proxy.githubusercontent.com","endpointGroup":"usercontent","candidates":[
+      {"address":"4.249.131.160","source":"BUNDLED","fetchedAt":1787500800000,"expiresAt":0,"latencyMs":0,"capability":"DIRECT_TLS","failures":0,"backoffUntil":0,"interceptOnly":false}
+    ]},
+    {"domain":"raw.githubusercontent.com","endpointGroup":"usercontent","candidates":[
+      {"address":"185.199.108.133","source":"BUNDLED","fetchedAt":1787500800000,"expiresAt":0,"latencyMs":0,"capability":"FRAGMENTED_TLS","failures":0,"backoffUntil":0,"interceptOnly":false},
+      {"address":"185.199.109.133","source":"BUNDLED","fetchedAt":1787500800000,"expiresAt":0,"latencyMs":0,"capability":"FRAGMENTED_TLS","failures":0,"backoffUntil":0,"interceptOnly":false},
+      {"address":"185.199.110.133","source":"BUNDLED","fetchedAt":1787500800000,"expiresAt":0,"latencyMs":0,"capability":"FRAGMENTED_TLS","failures":0,"backoffUntil":0,"interceptOnly":false}
+    ]},
+    {"domain":"objects.githubusercontent.com","endpointGroup":"usercontent","candidates":[
+      {"address":"185.199.108.133","source":"BUNDLED","fetchedAt":1787500800000,"expiresAt":0,"latencyMs":0,"capability":"FRAGMENTED_TLS","failures":0,"backoffUntil":0,"interceptOnly":false},
+      {"address":"185.199.109.133","source":"BUNDLED","fetchedAt":1787500800000,"expiresAt":0,"latencyMs":0,"capability":"FRAGMENTED_TLS","failures":0,"backoffUntil":0,"interceptOnly":false}
+    ]},
+    {"domain":"release-assets.githubusercontent.com","endpointGroup":"usercontent","candidates":[
+      {"address":"185.199.108.133","source":"BUNDLED","fetchedAt":1787500800000,"expiresAt":0,"latencyMs":0,"capability":"FRAGMENTED_TLS","failures":0,"backoffUntil":0,"interceptOnly":false},
+      {"address":"185.199.111.133","source":"BUNDLED","fetchedAt":1787500800000,"expiresAt":0,"latencyMs":0,"capability":"FRAGMENTED_TLS","failures":0,"backoffUntil":0,"interceptOnly":false}
+    ]},
+    {"domain":"avatars.githubusercontent.com","endpointGroup":"usercontent","candidates":[
+      {"address":"185.199.108.133","source":"BUNDLED","fetchedAt":1787500800000,"expiresAt":0,"latencyMs":0,"capability":"FRAGMENTED_TLS","failures":0,"backoffUntil":0,"interceptOnly":false},
+      {"address":"185.199.111.133","source":"BUNDLED","fetchedAt":1787500800000,"expiresAt":0,"latencyMs":0,"capability":"FRAGMENTED_TLS","failures":0,"backoffUntil":0,"interceptOnly":false}
+    ]},
+    {"domain":"user-images.githubusercontent.com","endpointGroup":"usercontent","candidates":[
+      {"address":"185.199.108.133","source":"BUNDLED","fetchedAt":1787500800000,"expiresAt":0,"latencyMs":0,"capability":"FRAGMENTED_TLS","failures":0,"backoffUntil":0,"interceptOnly":false},
+      {"address":"185.199.110.133","source":"BUNDLED","fetchedAt":1787500800000,"expiresAt":0,"latencyMs":0,"capability":"FRAGMENTED_TLS","failures":0,"backoffUntil":0,"interceptOnly":false}
+    ]},
+    {"domain":"media.githubusercontent.com","endpointGroup":"usercontent","candidates":[
+      {"address":"185.199.109.133","source":"BUNDLED","fetchedAt":1787500800000,"expiresAt":0,"latencyMs":0,"capability":"DIRECT_TLS","failures":0,"backoffUntil":0,"interceptOnly":false},
+      {"address":"185.199.110.133","source":"BUNDLED","fetchedAt":1787500800000,"expiresAt":0,"latencyMs":0,"capability":"DIRECT_TLS","failures":0,"backoffUntil":0,"interceptOnly":false}
+    ]},
+    {"domain":"camo.githubusercontent.com","endpointGroup":"usercontent","candidates":[
+      {"address":"185.199.111.133","source":"BUNDLED","fetchedAt":1787500800000,"expiresAt":0,"latencyMs":0,"capability":"DIRECT_TLS","failures":0,"backoffUntil":0,"interceptOnly":false},
+      {"address":"185.199.108.133","source":"BUNDLED","fetchedAt":1787500800000,"expiresAt":0,"latencyMs":0,"capability":"DIRECT_TLS","failures":0,"backoffUntil":0,"interceptOnly":false}
+    ]},
+    {"domain":"github.io","endpointGroup":"pages","includeSubdomains":true,"candidates":[
+      {"address":"185.199.108.153","source":"BUNDLED","fetchedAt":1787500800000,"expiresAt":0,"latencyMs":0,"capability":"DIRECT_TLS","failures":0,"backoffUntil":0,"interceptOnly":false},
+      {"address":"185.199.109.153","source":"BUNDLED","fetchedAt":1787500800000,"expiresAt":0,"latencyMs":0,"capability":"DIRECT_TLS","failures":0,"backoffUntil":0,"interceptOnly":false}
+    ]}
+  ]
+}

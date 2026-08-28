@@ -5,6 +5,7 @@ import org.json.JSONObject
 import org.xiyu.githubdirect.core.dns.CidrFilter
 import org.xiyu.githubdirect.core.rules.DomainMatcher
 import org.xiyu.githubdirect.core.rules.DomainRule
+import org.xiyu.githubdirect.core.rules.DnsNames
 import org.xiyu.githubdirect.core.rules.ExactMatcher
 import org.xiyu.githubdirect.core.rules.HostsProviderSpec
 import org.xiyu.githubdirect.core.rules.ResolverPolicy
@@ -90,7 +91,7 @@ object RuleCatalog {
             try {
                 val o = arr.getJSONObject(i)
                 val providerId = o.optString("providerId").takeIf { it.isNotBlank() } ?: continue
-                val intervalHours = o.optLong("intervalHours", 4)
+                val intervalHours = o.optLong("intervalHours", 6)
                 val port = o.optInt("tcpProbePort", 443)
                 result.add(HostsProviderSpec(providerId, intervalHours, port))
             } catch (_: Exception) {
@@ -124,6 +125,11 @@ object RuleCatalog {
         val fragmentTls = optNullableBoolean(obj, "fragmentTls")
         val fixedIp = obj.optString("fixedIp").takeIf { it.isNotBlank() }
         val cidr = parseCidr(obj.optJSONObject("cidr"))
+        val endpointGroup = safeReference(obj.optString("endpointGroup"))
+        val cidrRef = safeReference(obj.optString("cidrRef"))
+        val candidatePool = safeReference(obj.optString("candidatePool"))
+        val echConfigDomain = DnsNames.normalize(obj.optString("echConfigDomain"))
+        val nat64FallbackEligible = obj.optBoolean("nat64FallbackEligible", false)
 
         return DomainRule(
             id = id,
@@ -134,6 +140,11 @@ object RuleCatalog {
             fragmentTls = fragmentTls,
             cidr = cidr,
             fixedIp = fixedIp,
+            endpointGroup = endpointGroup,
+            cidrRef = cidrRef,
+            candidatePool = candidatePool,
+            echConfigDomain = echConfigDomain,
+            nat64FallbackEligible = nat64FallbackEligible,
         )
     }
 
@@ -152,4 +163,9 @@ object RuleCatalog {
         if (!obj.has(key)) return null
         return if (obj.isNull(key)) null else obj.optBoolean(key)
     }
+
+    private fun safeReference(value: String): String? =
+        value.takeIf { it.matches(REFERENCE_RE) }
+
+    private val REFERENCE_RE = Regex("^[A-Za-z0-9._-]{1,64}$")
 }

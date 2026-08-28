@@ -15,6 +15,7 @@ import org.xiyu.githubdirect.core.data.DiagLog;
 import org.xiyu.githubdirect.core.dns.IpAddresses;
 import org.xiyu.githubdirect.core.dns.PlainDnsClient;
 import org.xiyu.githubdirect.core.dns.SelectiveDnsEngine;
+import org.xiyu.githubdirect.core.dns.OkHttpWireDohTransport;
 import org.xiyu.githubdirect.core.dns.WireDohClient;
 import org.xiyu.githubdirect.core.net.VirtualIpPool;
 import org.xiyu.githubdirect.core.rules.AppScopeMode;
@@ -161,7 +162,7 @@ public class DnsVpnService extends VpnService {
             // 优先用 DirectEngine 共享单例（Root 后端与 VPN 复用同一引擎）；防御性回退自建。
             SelectiveDnsEngine dnsEngine = DirectEngine.dnsEngine();
             if (dnsEngine == null) {
-                WireDohClient wire = new WireDohClient();
+                WireDohClient wire = OkHttpWireDohTransport.createClient(binder);
                 PlainDnsClient plain = new PlainDnsClient();
                 dnsEngine = new SelectiveDnsEngine(
                         DirectEngine.registry(),
@@ -192,10 +193,11 @@ public class DnsVpnService extends VpnService {
         running = false;
         active = false;
         if (binder != null) {
-            binder.stop();
+            // 只撤掉 VpnService.protect；不要 unregister / stopProviders。
+            // 用户切到 Root 时 STOP 是异步的，否则会把刚拉起的 github-hosts 和 DoH 网络绑定拆掉。
+            binder.setProtect(null);
             binder = null;
         }
-        DirectEngine.stopProviders();
         if (dnsExecutor != null) {
             dnsExecutor.shutdownNow();
             dnsExecutor = null;

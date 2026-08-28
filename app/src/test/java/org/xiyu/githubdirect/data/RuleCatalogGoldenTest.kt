@@ -82,7 +82,18 @@ class RuleCatalogGoldenTest {
         assertEquals(VerifyStatus.VERIFIED, github.verifyStatus)
         assertEquals("github priority 必须为 10", 10, github.priority)
         assertNotNull("github 必须带 CIDR 白名单", github.cidr)
+        assertTrue(
+            "github IPv6 白名单必须包含官方 2a0a:a440::/29",
+            github.cidr!!.allowsIpv6(org.xiyu.githubdirect.core.dns.IpAddresses.parseIpv6("2a0a:a447::1")!!),
+        )
+        assertFalse(
+            "github 白名单不得包含 Google 2001:4860::/32",
+            github.cidr!!.allowsIpv6(org.xiyu.githubdirect.core.dns.IpAddresses.parseIpv6("2001:4860::1")!!),
+        )
         assertTrue("github 必须声明 github-hosts provider", github.providers.any { it.providerId == "github-hosts" })
+        val web = github.domains.first { it.id == "github.com" }
+        assertEquals("web", web.endpointGroup)
+        assertEquals("github-meta", web.cidrRef)
     }
 
     @Test
@@ -93,6 +104,97 @@ class RuleCatalogGoldenTest {
                 assertFalse("NEEDS_VERIFY 服务 ${p.id} 不得默认启用", p.enabledByDefault)
             }
         }
+    }
+
+    @Test
+    fun `OpenAI官方核心域与WebSocket已建模且默认关闭`() {
+        val openai = loadCatalog()["openai"] ?: error("openai profile 缺失")
+        assertFalse(openai.enabledByDefault)
+        assertEquals(VerifyStatus.NEEDS_VERIFY, openai.verifyStatus)
+        assertFalse("OpenAI 流式连接应保留 IPv6", openai.aaaaSuppress)
+        val suffixes = openai.domains.mapNotNull { rule ->
+            (rule.matcher as? org.xiyu.githubdirect.core.rules.SuffixMatcher)
+                ?.suffix?.removePrefix(".")
+        }.toSet()
+        listOf("openai.com", "chatgpt.com", "oaistatic.com", "oaiusercontent.com", "oaistatsig.com")
+            .forEach { assertTrue("OpenAI 官方核心域缺失: $it", it in suffixes) }
+        val echRoots = openai.domains.asSequence()
+            .filter { it.echConfigDomain == "cloudflare-ech.com" }
+            .mapNotNull { rule ->
+                when (val matcher = rule.matcher) {
+                    is org.xiyu.githubdirect.core.rules.ExactMatcher -> matcher.domain
+                    is org.xiyu.githubdirect.core.rules.SuffixMatcher -> matcher.suffix.removePrefix(".")
+                    else -> null
+                }
+            }
+            .toSet()
+        listOf("chatgpt.com", "api.openai.com", "ws.chatgpt.com", "oaistatic.com")
+            .forEach { assertTrue("OpenAI ECH 预检策略缺失: $it", it in echRoots) }
+        val nat64Rules = openai.domains.filter { it.nat64FallbackEligible }
+        assertTrue("OpenAI NAT64 资格不得为空", nat64Rules.isNotEmpty())
+        assertTrue("NAT64 资格必须同时要求 ECH", nat64Rules.all { it.echConfigDomain != null })
+        assertTrue(
+            "其他 profile 不得隐式取得第三方 NAT64 资格",
+            loadCatalog().filterKeys { it != "openai" }.values
+                .flatMap { it.domains }
+                .none { it.nat64FallbackEligible },
+        )
+        assertTrue(openai.idleTimeoutSec >= 86_400)
+    }
+
+    @Test
+    fun `Google YouTube Discord与OpenAI均保留IPv6且实机验收前保持待验证`() {
+        val catalog = loadCatalog()
+        val expectedExact = mapOf(
+            "youtube" to setOf(
+                "www.youtube.com",
+                "youtubei.googleapis.com",
+                "i.ytimg.com",
+                "redirector.googlevideo.com",
+            ),
+            "google-llc" to setOf(
+                "www.google.com",
+                "accounts.google.com",
+                "play.googleapis.com",
+                "www.gstatic.com",
+            ),
+            "discord" to setOf(
+                "gateway.discord.gg",
+                "cdn.discordapp.com",
+                "media.discordapp.net",
+            ),
+            "openai" to setOf(
+                "api.openai.com",
+                "ws.chatgpt.com",
+                "android.chat.openai.com",
+                "auth.openai.com",
+            ),
+        )
+        for ((id, expected) in expectedExact) {
+            val profile = catalog[id] ?: error("$id profile 缺失")
+            assertFalse("$id 不得默认启用", profile.enabledByDefault)
+            assertEquals("$id 尚未通过当前设备全链路", VerifyStatus.NEEDS_VERIFY, profile.verifyStatus)
+            assertFalse("$id 应保留 IPv6", profile.aaaaSuppress)
+            val actual = profile.domains.mapNotNull { rule ->
+                (rule.matcher as? org.xiyu.githubdirect.core.rules.ExactMatcher)?.domain
+            }.toSet()
+            assertTrue("$id 缺少精确入口: ${expected - actual}", actual.containsAll(expected))
+        }
+        assertTrue((catalog["discord"]?.idleTimeoutSec ?: 0) >= 86_400)
+        assertTrue((catalog["openai"]?.idleTimeoutSec ?: 0) >= 86_400)
+    }
+
+    @Test
+    fun `Google与YouTube规则显式加入同池但其他平台不被隐式合并`() {
+        val catalog = loadCatalog()
+        for (id in listOf("google-llc", "youtube")) {
+            val profile = catalog.getValue(id)
+            assertTrue(profile.domains.isNotEmpty())
+            assertTrue("$id 存在未声明候选池的规则", profile.domains.all {
+                it.candidatePool == "google-edge"
+            })
+        }
+        assertTrue(catalog.getValue("discord").domains.all { it.candidatePool == null })
     }
 
     @Test
@@ -159,11 +261,11 @@ class RuleCatalogGoldenTest {
     }
 
     @Test
-    fun `所有 transport 均属于已知枚举（RuleCatalog 已过滤非法值）`() {
+    fun `所有规则ID均非空（RuleCatalog 已过滤非法条目）`() {
         val profiles = loadCatalog()
         for (p in profiles.values) {
             for (r in p.domains) {
-                assertTrue("规则 ${p.id}/${r.id} transport 非法", r.transport != null)
+                assertTrue("规则 ${p.id} 含空 ID", r.id.isNotBlank())
             }
         }
     }

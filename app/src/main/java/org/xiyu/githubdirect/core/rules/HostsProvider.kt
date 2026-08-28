@@ -5,7 +5,8 @@ import org.xiyu.githubdirect.core.net.NetworkBinder
 import org.xiyu.githubdirect.core.net.RelayIpTable
 
 /**
- * 可选数据源抽象（GitHub gitee-hosts feed 是第一个实现，非基础设施）。
+ * 可选可信候选数据源抽象。GitHub Meta/社区种子只是一个来源；其他平台只采用严格 Wire
+ * DoH、系统 DNS 观测与 TLS 主机名/系统信任链探测，不因 provider id 的历史名称降级校验。
  *
  * 仅当 profile 声明 providers 且服务启用时才启动；数据只服务该 profile 的
  * PROVIDER_FIRST 域，失败自动回退 DoH——provider 不可用时目标服务照常工作。
@@ -27,6 +28,9 @@ interface HostsProvider {
 
     /** 拉取 + 解析 + 探活验证；返回 domain → candidate IPs；失败返回 null。 */
     fun fetch(): Map<String, List<String>>?
+
+    /** 用户触发的强制重探；实现可绕过正常刷新周期和候选退避。 */
+    fun reprobe(): Map<String, List<String>>? = fetch()
 
     /** TCP 探活（isTcpReachable 迁移）。 */
     fun validateIp(ip: String, port: Int): Boolean

@@ -50,23 +50,19 @@ class TransparentDnsListenerTest {
     }
 
     @Test
-    fun `UDP handler 返回 null 时无响应（等价丢包）`() {
+    fun `UDP handler 返回 null 时回 SERVFAIL`() {
         val listener = TransparentDnsListener(udpPort = 15354, tcpPort = 15355)
-        assertTrue(listener.start(handler))
+        assertTrue(listener.start { null })
         val client = DatagramSocket()
         try {
-            client.soTimeout = 1500
-            client.send(DatagramPacket("nodata".toByteArray(), 6, InetAddress.getLoopbackAddress(), 15354))
+            client.soTimeout = 3000
+            val query = ByteArray(12).also { it[0] = 0x12; it[1] = 0x34 }
+            client.send(DatagramPacket(query, query.size, InetAddress.getLoopbackAddress(), 15354))
             val buf = ByteArray(64)
             val pkt = DatagramPacket(buf, buf.size)
-            val start = System.currentTimeMillis()
-            try {
-                client.receive(pkt)
-                throw AssertionError("不应收到响应")
-            } catch (e: java.net.SocketTimeoutException) {
-                // 预期：超时无响应
-            }
-            assertTrue(System.currentTimeMillis() - start >= 1000)
+            client.receive(pkt)
+            assertTrue(pkt.length >= 4)
+            assertEquals(2, buf[3].toInt() and 0x0F) // RCODE=SERVFAIL
         } finally {
             client.close()
             listener.stop()

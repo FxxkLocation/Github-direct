@@ -28,7 +28,7 @@ import org.xiyu.githubdirect.test.dohResponder
  * SelectiveDnsEngine 决策流测试（全部 mock，无真实网络）。
  *
  * 核心不变式（§28/§29）：
- * - 非目标/无法合成 → raw 字节原样转发，绝不 JSON 重建（qtype TXT/HTTPS/未知 全保留）
+ * - 未命中域的所有 QTYPE → raw 字节原样转发
  * - 合成路径失败 → SERVFAIL；raw 转发失败 → null（非 NXDOMAIN）
  * - 上游 RCode 原样透传
  */
@@ -71,7 +71,7 @@ class SelectiveDnsEngineTest {
     ): SelectiveDnsEngine {
         val registry = buildRegistry(InMemorySettingsStore(), *profiles)
         val resolver = EndpointResolver(FakeBinder(dohJson), servers = listOf("http://fake.doh/"))
-        val wire = WireDohClient(transportOverride = { _, raw, _ ->
+        val wire = WireDohClient(transport = { _, raw, _ ->
             upstream.wireReceived.add(raw); upstream.wireBody(raw)
         })
         val plain = PlainDnsClient(queryOverride = { raw, _ ->
@@ -111,14 +111,27 @@ class SelectiveDnsEngineTest {
     }
 
     @Test
-    fun `未命中域HTTPS未知qtype与ANY均raw转发`() {
+    fun `未命中域HTTPS记录保持raw转发`() {
+        val up = FakeUpstream()
+        val canned = byteArrayOf(9)
+        up.wireBody = { canned }
+        val e = engine(up)
+        val raw = buildRawQuery("youtube.com", 65)
+        val resp = e.handleQuery(raw)!!
+        assertTrue(resp === canned)
+        assertArrayEquals(raw, up.wireReceived.single())
+        assertTrue(up.plainReceived.isEmpty())
+    }
+
+    @Test
+    fun `未命中域未知qtype与ANY均raw转发`() {
         val up = FakeUpstream()
         up.wireBody = { raw -> DnsPacketCodec.buildEmptyResponse(raw, DnsPacketCodec.getQuestionEnd(raw)) }
         val e = engine(
             up,
             profile("p", 5, DomainRule("x", ExactMatcher("x.example.com"), CLEAN_DNS)),
         )
-        for (qtype in listOf(65, 99, 255)) { // HTTPS / 未知 / ANY
+        for (qtype in listOf(99, 255)) { // 未知 / ANY
             up.wireReceived.clear()
             val raw = buildRawQuery("other.example.com", qtype)
             val resp = e.handleQuery(raw)
@@ -200,20 +213,40 @@ class SelectiveDnsEngineTest {
     }
 
     @Test
-    fun `relay域AAAA无抑制raw转发`() {
+    fun `relay域AAAA无抑制时由DoH合成真实IPv6而不走raw转发`() {
         val up = FakeUpstream()
-        up.wireBody = { raw -> byteArrayOf(3) }
+        val expected = IpAddresses.parseIpv6("2606:4700:4700::1111")!!
         val e = engine(
             up,
             profile(
                 "github", 5,
                 DomainRule("g", ExactMatcher("github.com"), TLS_FRAGMENT_RELAY, fixedIp = "140.82.112.3"),
             ),
+            dohJson = dohResponder(v6 = "2606:4700:4700::1111"),
         )
         val raw = buildRawQuery("github.com", 28)
-        val resp = e.handleQuery(raw)
-        assertNotNull(resp)
-        assertArrayEquals(raw, up.wireReceived[0]) // 不合成，交给上游
+        val resp = e.handleQuery(raw)!!
+        assertEquals(0, dnsRcode(resp))
+        assertEquals(1, dnsAncount(resp))
+        val qEnd = DnsPacketCodec.getQuestionEnd(raw)
+        assertArrayEquals(expected, resp.copyOfRange(qEnd + 12, qEnd + 28))
+        assertTrue("AAAA 合成不得走非目标 raw 转发", up.wireReceived.isEmpty())
+    }
+
+    @Test
+    fun `relay域AAAA严格DoH失败返回SERVFAIL而非污染raw结果`() {
+        val up = FakeUpstream()
+        up.wireBody = { byteArrayOf(3) }
+        val e = engine(
+            up,
+            profile(
+                "openai", 5,
+                DomainRule("chatgpt", ExactMatcher("chatgpt.com"), TLS_FRAGMENT_RELAY),
+            ),
+        )
+        val resp = e.handleQuery(buildRawQuery("chatgpt.com", 28))!!
+        assertEquals(2, dnsRcode(resp))
+        assertTrue(up.wireReceived.isEmpty())
     }
 
     @Test
@@ -231,6 +264,23 @@ class SelectiveDnsEngineTest {
         val resp = e.handleQuery(raw)
         assertNotNull(resp)
         assertArrayEquals(raw, up.wireReceived[0])
+    }
+
+    @Test
+    fun `relay域HTTPS记录回NODATA让浏览器走A`() {
+        val up = FakeUpstream()
+        val e = engine(
+            up,
+            profile(
+                "github", 5,
+                DomainRule("github.com", ExactMatcher("github.com"), TLS_FRAGMENT_RELAY, fixedIp = "140.82.112.3"),
+            ),
+        )
+        val raw = buildRawQuery("github.com", 65)
+        val resp = e.handleQuery(raw)!!
+        assertEquals(0, dnsRcode(resp))
+        assertEquals(0, dnsAncount(resp))
+        assertTrue(up.wireReceived.isEmpty())
     }
 
     @Test
@@ -299,7 +349,75 @@ class SelectiveDnsEngineTest {
         assertArrayEquals(raw, up.wireReceived[0])
     }
 
+    @Test
+    fun `CLEAN_DNS域HTTPS记录优先透传严格WireDoH以保留原生ECH与H3`() {
+        val up = FakeUpstream()
+        up.wireBody = { raw ->
+            DnsPacketCodec.buildEmptyResponse(raw, DnsPacketCodec.getQuestionEnd(raw))
+        }
+        val e = engine(
+            up,
+            profile("p", 5, DomainRule("s", SuffixMatcher(".example.com"), CLEAN_DNS)),
+        )
+        val raw = buildRawQuery("clean.example.com", 65)
+        val expected = DnsPacketCodec.buildEmptyResponse(raw, DnsPacketCodec.getQuestionEnd(raw))
+
+        val resp = e.handleQuery(raw)
+
+        assertArrayEquals(expected, resp)
+        assertArrayEquals(raw, up.wireReceived.single())
+        assertTrue("HTTPS/SVCB 参数不得回退到可能被污染的明文 DNS", up.plainReceived.isEmpty())
+    }
+
+    @Test
+    fun `CLEAN_DNS域SVCB在WireDoH失败时回NODATA而非明文DNS`() {
+        val up = FakeUpstream()
+        up.wireBody = { null }
+        up.plainBody = { byteArrayOf(6) }
+        val e = engine(
+            up,
+            profile("p", 5, DomainRule("s", SuffixMatcher(".example.com"), CLEAN_DNS)),
+        )
+        val raw = buildRawQuery("clean.example.com", 64)
+
+        val resp = e.handleQuery(raw)!!
+
+        assertEquals(0, dnsRcode(resp))
+        assertEquals(0, dnsAncount(resp))
+        assertTrue(up.wireReceived.isNotEmpty())
+        up.wireReceived.forEach { assertArrayEquals(raw, it) }
+        assertTrue("严格 Wire DoH 失败后必须走 A/AAAA 降级，不采用明文 SVCB", up.plainReceived.isEmpty())
+    }
+
     // ---------- raw 转发回退与错误语义（§29） ----------
+
+    @Test
+    fun `未命中域A查询保持raw响应而不做本地合成`() {
+        val up = FakeUpstream()
+        val canned = byteArrayOf(9, 8, 7, 6)
+        up.wireBody = { canned }
+        val e = engine(
+            up,
+            profile("p", 5, DomainRule("x", ExactMatcher("x.example.com"), CLEAN_DNS)),
+            dohJson = { error("unmatched domain must not use synthesized resolver") },
+        )
+        val raw = buildRawQuery("baidu.com", 1)
+        val resp = e.handleQuery(raw)!!
+        assertTrue(resp === canned)
+        assertArrayEquals(raw, up.wireReceived.single())
+        assertTrue(up.plainReceived.isEmpty())
+    }
+
+    @Test
+    fun `未命中域AAAA查询也保持raw响应`() {
+        val up = FakeUpstream()
+        val canned = byteArrayOf(6)
+        up.wireBody = { canned }
+        val e = engine(up, dohJson = { error("unmatched domain must not use synthesized resolver") })
+        val raw = buildRawQuery("nomatch.example.com", 28)
+        assertTrue(e.handleQuery(raw) === canned)
+        assertArrayEquals(raw, up.wireReceived.single())
+    }
 
     @Test
     fun `wire失败回退明文UDP`() {

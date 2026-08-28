@@ -6,7 +6,6 @@ import java.io.BufferedOutputStream
 import java.io.InputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
-import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -18,7 +17,10 @@ import java.util.concurrent.atomic.AtomicInteger
  * DNS 监听器抽象（测试注入点）。
  */
 interface DnsListener {
-    /** 绑定 127.0.0.1:udpPort / tcpPort 并启动收包循环；绑定失败返回 false（事务 ROLLBACK 依据）。 */
+    /** 最近一次 start 失败的有界诊断；成功后清空。 */
+    val lastFailureDetail: String get() = ""
+
+    /** 绑定 0.0.0.0:udpPort / tcpPort 并启动收包循环；绑定失败返回 false（事务 ROLLBACK 依据）。 */
     fun start(handler: (ByteArray) -> ByteArray?): Boolean
 
     /** 关闭监听与全部活动连接；幂等。 */
@@ -31,7 +33,7 @@ interface DnsListener {
 /**
  * 透明 DNS 拦截（REDIRECT 至本地监听，设计 §7）。
  *
- * - UDP 5354：`DatagramSocket` 绑 127.0.0.1:5354；单收线程逐包调 dnsHandler，
+ * - UDP 5354：`DatagramSocket` 绑 0.0.0.0:5354（iptables REDIRECT 在部分机型改写到 LAN IP 而非 127.0.0.1）；
  *   非 null 响应回写源地址（回程由 conntrack 对 REDIRECT 条目做 un-NAT，客户端看到的是原 DNS 服务器地址）。
  *   处理异常 → 忽略（等价丢包，客户端重试）。
  * - TCP 5355：`ServerSocket` 绑 127.0.0.1:5355；每连接一线程（上限 32，超出直接断开）：
@@ -48,6 +50,9 @@ class TransparentDnsListener(
 
     @Volatile
     private var running = false
+    @Volatile
+    override var lastFailureDetail: String = ""
+        private set
     private var handler: ((ByteArray) -> ByteArray?)? = null
     private var udpSocket: DatagramSocket? = null
     private var tcpServer: ServerSocket? = null
@@ -57,22 +62,25 @@ class TransparentDnsListener(
     override fun start(handler: (ByteArray) -> ByteArray?): Boolean {
         if (running) return true
         requireNotNull(handler) { "handler 不能为 null" }
+        lastFailureDetail = ""
 
         // 先绑 UDP，再绑 TCP；任一失败 → 关闭已绑定的，返回 false
         val udp = try {
             DatagramSocket(null).apply {
                 reuseAddress = true
-                bind(InetSocketAddress(InetAddress.getLoopbackAddress(), udpPort))
+                bind(InetSocketAddress(udpPort))
             }
         } catch (t: Throwable) {
+            lastFailureDetail = "UDP 0.0.0.0:$udpPort: ${failureText(t)}"
             return false
         }
         val tcp = try {
             ServerSocket().apply {
                 reuseAddress = true
-                bind(InetSocketAddress(InetAddress.getLoopbackAddress(), tcpPort), 16)
+                bind(InetSocketAddress(tcpPort), 16)
             }
         } catch (t: Throwable) {
+            lastFailureDetail = "TCP 0.0.0.0:$tcpPort: ${failureText(t)}"
             closeQuietly(udp)
             return false
         }
@@ -113,8 +121,8 @@ class TransparentDnsListener(
                 val resp = try {
                     h(raw)
                 } catch (t: Throwable) {
-                    null // 处理异常 = 丢包，客户端重试
-                }
+                    null
+                } ?: if (raw.size >= 12) DnsPacketCodec.buildServFailResponse(raw) else null
                 if (resp != null) {
                     sock.send(DatagramPacket(resp, resp.size, pkt.socketAddress))
                 }
@@ -161,7 +169,8 @@ class TransparentDnsListener(
                     h(payload)
                 } catch (t: Throwable) {
                     null
-                } ?: return
+                } ?: if (payload.size >= 12) DnsPacketCodec.buildServFailResponse(payload) else null
+                if (resp == null) return
                 val frame = ByteArray(2 + resp.size)
                 DnsPacketCodec.writeU16(frame, 0, resp.size)
                 System.arraycopy(resp, 0, frame, 2, resp.size)
@@ -206,6 +215,9 @@ class TransparentDnsListener(
         } catch (_: Throwable) {
         }
     }
+
+    private fun failureText(t: Throwable): String =
+        "${t.javaClass.simpleName}: ${t.message.orEmpty()}".trim().take(320)
 
     companion object {
         private const val MAX_UDP_PACKET = 4096

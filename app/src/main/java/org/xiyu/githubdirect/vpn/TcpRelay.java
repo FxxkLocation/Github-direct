@@ -3,7 +3,7 @@ package org.xiyu.githubdirect.vpn;
 import android.util.Log;
 
 import org.xiyu.githubdirect.core.net.ClientHelloAccumulator;
-import org.xiyu.githubdirect.core.net.TlsFragmenter;
+import org.xiyu.githubdirect.core.net.TlsClientHelloRecords;
 
 import java.io.InputStream;
 import java.net.InetAddress;
@@ -24,14 +24,14 @@ import java.util.concurrent.atomic.AtomicLong;
  * 工作在 TUN 层：
  * - 读取 TUN 中的 TCP 包，管理 TCP 状态机
  * - 对目标 IP 的 443 端口建立 protected Socket
- * - 将首个 ClientHello 分片发送（绕过 SNI 检测；分片逻辑为 core/net/TlsFragmenter 纯函数）
+ * - 将首个 ClientHello 分片发送（分片逻辑为 core/net/TlsClientHelloRecords 纯函数）
  * - 双向中继数据
  *
  * M1 接口化改造：
  * - RouteTarget(realIp, fragmentTls, idleTimeoutSec) 参数对象
  * - SessionLeaseHook 会话租约（vIP refs 生命周期）
  * - maxSessions 会话上限（超限新 SYN 回 RST）
- * - 分片判定/切分移入 core/net/TlsFragmenter（行为与旧实现完全一致）
+ * - 分片判定/切分移入 core/net/TlsClientHelloRecords
  */
 public class TcpRelay {
 
@@ -373,7 +373,7 @@ public class TcpRelay {
     /**
      * 写线程：从 writeQueue 取数据并通过 SocketChannel 写入。
      * 首个 ClientHello 经 ClientHelloAccumulator 累积到完整 record 后，
-     * 由 core/net/TlsFragmenter 纯函数做 TLS 记录层分片（两段发送 + SPLIT_DELAY_MS）。
+     * 由 core/net/TlsClientHelloRecords 做多 TLS record + 多 TCP write 分片。
      */
     private void writerLoop(TcpSession session) {
         final ClientHelloAccumulator chAccum = session.chAccum;
@@ -401,14 +401,26 @@ public class TcpRelay {
                     if (out == null) continue; // 首 record 未齐，等待下一批
 
                     if (chAccum.consumeFragmented()) {
-                        // 本次 feed 产生的分片：两段发送（首段、sleep、尾段）
-                        int firstRecordEnd = 5 + ((out[3] & 0xFF) << 8 | (out[4] & 0xFF));
-                        channelWrite(ch, out, 0, firstRecordEnd);
-                        Log.d(TAG, "Writer: first fragment sent " + firstRecordEnd + " bytes");
-                        Thread.sleep(TlsFragmenter.SPLIT_DELAY_MS);
-                        channelWrite(ch, out, firstRecordEnd, out.length - firstRecordEnd);
-                        Log.i(TAG, "TLS record fragmented: " + firstRecordEnd + " + "
-                                + (out.length - firstRecordEnd) + " bytes");
+                        TlsClientHelloRecords.TcpWritePlan writePlan =
+                                TlsClientHelloRecords.tcpWritePlan(out);
+                        int[] writeEnds = writePlan.getWriteEnds();
+                        int start = 0;
+                        for (int index = 0; index < writeEnds.length; index++) {
+                            int end = writeEnds[index];
+                            if (end <= start || end > out.length) continue;
+                            channelWrite(ch, out, start, end - start);
+                            start = end;
+                            if (index == writePlan.getUrgentAfterWriteIndex() && start < out.length) {
+                                try {
+                                    session.serverSocket.sendUrgentData('a');
+                                } catch (Exception ignored) {
+                                    // 不支持 TCP urgent data 时继续使用多层分片。
+                                }
+                            }
+                            if (start < out.length) Thread.sleep(TlsClientHelloRecords.WRITE_INTERVAL_MS);
+                        }
+                        Log.i(TAG, "TLS record fragmented: " + writeEnds.length
+                                + " writes, " + out.length + " bytes");
                     } else {
                         // 非分片（放弃分片/超时/非 TLS/判定失败）→ 一次写入
                         channelWrite(ch, out, 0, out.length);

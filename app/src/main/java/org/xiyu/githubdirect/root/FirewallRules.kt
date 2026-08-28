@@ -1,5 +1,8 @@
 package org.xiyu.githubdirect.root
 
+import org.xiyu.githubdirect.core.dns.IpAddresses
+import org.xiyu.githubdirect.core.routing.RouteSnapshotCodec
+
 /**
  * FirewallRules —— iptables-restore 安装脚本 / 清理命令 / 校验特征行的**纯字符串生成**（不执行）。
  *
@@ -7,18 +10,22 @@ package org.xiyu.githubdirect.root
  * - nat 表自有 chain：`GHD_DNS`（DNS UDP 5354 + TCP 5355 重定向）、`GHD_TCP`（245 条 vIP TCP 重定向）；
  *   filter 表自有 chain：`GHD_UDP_DROP`（vIP UDP 黑洞，QUIC 客户端 TCP 回退）。
  * - 只管理自有 chain：卸载 = 删 OUTPUT jump → flush 自己 chain → 删自己 chain（先删引用再删除）。
- * - 自身 UID 排除：所有规则带 `-m owner ! --uid-owner <selfUid>`，DoH/relay/探活自身流量不进规则。
+ * - 自身 UID 排除：父链规则带 `-m owner ! --uid-owner <selfUid>`；SELECTED 载荷链继承入口匹配，
+ *   DoH/relay/探活自身流量不进规则。
  * - 安装用 iptables-restore `--noflush`（原子、不碰他人规则；chain 由 `:GHD_* - [0:0]` 定义，不存在则创建）。
  *
  * App scope 语义：
  * - ALL_APPS（scopeUids=null）：owner 条件 = `! --uid-owner self`，245 条规则直挂在 GHD_TCP。
- * - SELECTED（include=true）：每 UID 一子链 `GHD_TCP_UID_<uid>`（245 条规则无 owner 匹配），
- *   GHD_TCP 内 jump 规则 `-m owner ! --uid-owner self -m owner --uid-owner U -j GHD_TCP_UID_U`
- *   （iptables 无 IN 集合匹配，每 UID 一条 jump；多 -m owner 语义 AND）。
+ * - SELECTED（include=true）：每 UID 只在父链放一条 owner jump，全部 UID 共享一组无 owner 的
+ *   `GHD_*_SEL` 载荷链。iptables 无 UID 集合匹配，因此 UID jump 为 O(U)，但 245 条 vIP 与
+ *   真实目标规则不再按 UID 复制，整体为 O(U + R)。
+ *   显式标记为 Electron-like 宿主的 UID 会在共享目标链返回后追加 TCP/443 全捕获；
+ *   IPv6 仅在完整 ip6tables + IPv6 透明监听能力通过时对称启用；
+ *   透明监听器只对启用域名应用路由/分片，其余连接按 SO_ORIGINAL_DST 原样透传。
  * - EXCLUDED（include=false）：单链 245 条规则，owner 条件 = `! self` + 每个排除 UID 一条
  *   `! --uid-owner U` 叠加（owner 模块多次匹配可叠加，语义 AND）；上限 8 个，超出抛异常。
  *
- * DNS 与 UDP 黑洞同样应用 scope 语义（SELECTED 用子链 GHD_DNS_UID_U / GHD_UDP_DROP_UID_U）。
+ * DNS 与 UDP 黑洞同样应用 scope 语义（SELECTED 分别使用共享链 GHD_DNS_SEL / GHD_UDP_SEL）。
  *
  * 端口编码：vIP 10.0.0.N（N=10..254，245 个）→ 本地监听 tcpBasePort+N（默认 7000+N）。
  */
@@ -33,12 +40,28 @@ class FirewallRules(
     /** App scope：null=ALL_APPS；非 null 且 include=true → 仅这些 UID（SELECTED）；include=false → 排除这些 UID（EXCLUDED）。 */
     private val scopeUids: Set<Int>? = null,
     private val scopeInclude: Boolean = true,
+    /** SELECTED 中显式启用的 Electron-like/WebView/Cronet 宿主 UID；其他 scope 模式忽略。 */
+    private val fullTlsCaptureUids: Set<Int> = emptySet(),
+    /** GitHub Meta、已验证候选及观测到的污染目标；分别进入 IPv4/IPv6 数据面。 */
+    private val directDestinations: Set<String> = emptySet(),
+    private val enableRealIpRedirect: Boolean = false,
+    /** 仅在完整 ip6tables nat/owner/REDIRECT/restore 能力探测通过时开启。 */
+    private val enableIpv6Redirect: Boolean = false,
+    private val directPort: Int = 7443,
+    private val useIpSet: Boolean = false,
+    private val rejectUdp443: Boolean = false,
+    private val rejectIpv6Udp443: Boolean = false,
+    val generation: Long = 0,
 ) {
 
     private enum class ScopeMode { ALL_APPS, SELECTED, EXCLUDED }
 
     private val mode: ScopeMode
     private val uids: List<Int>
+    private val captureUids: List<Int>
+    private val captureUidsV6: List<Int>
+    private val directCidrsV4: List<String>
+    private val directCidrsV6: List<String>
 
     init {
         require(selfUid > 0) { "selfUid 必须 > 0: $selfUid" }
@@ -57,6 +80,43 @@ class FirewallRules(
             throw IllegalArgumentException("EXCLUDED scope 最多 $MAX_EXCLUDED_UIDS 个 UID，实际 ${effective.size} 个")
         }
         uids = effective
+        // 全 TLS 捕获必须同时满足：显式 SELECTED、属于普通 scope、真实 IP 重定向已启用。
+        // 这样 ALL/EXCLUDED 不会因一个设置键意外扩大到全设备 HTTPS。
+        captureUids = if (mode == ScopeMode.SELECTED && enableRealIpRedirect) {
+            fullTlsCaptureUids.asSequence()
+                .filter { it > 0 && it != selfUid && it in uids }
+                .distinct()
+                .sorted()
+                .toList()
+        } else {
+            emptyList()
+        }
+        // IPv6 全捕获必须额外经过完整 IPv6 netfilter/监听能力门控。不能仅因用户授权
+        // full TLS 就生成 ip6tables REDIRECT，否则缺少 [::1] 监听时会制造 IPv6 黑洞。
+        captureUidsV6 = if (enableIpv6Redirect) captureUids else emptyList()
+        val validDestinations = if (enableRealIpRedirect) {
+            directDestinations.asSequence()
+                .filter(RouteSnapshotCodec::isRoutableCidr)
+                .mapNotNull { cidr ->
+                    IpAddresses.parseIpAddress(cidr.substringBefore('/'))?.size?.let { cidr to it }
+                }
+                .distinct()
+                .sortedBy { it.first }
+                .toList()
+        } else emptyList()
+        val limit = if (useIpSet) MAX_IPSET_DESTINATIONS else MAX_INLINE_DESTINATIONS
+        directCidrsV4 = validDestinations.asSequence()
+            .filter { it.second == 4 }
+            .map { it.first }
+            .take(limit)
+            .toList()
+        directCidrsV6 = if (enableIpv6Redirect) {
+            validDestinations.asSequence()
+                .filter { it.second == 16 }
+                .map { it.first }
+                .take(limit)
+                .toList()
+        } else emptyList()
     }
 
     // ---------- 纯换算 ----------
@@ -82,75 +142,191 @@ class FirewallRules(
 
     /** 一条 vIP TCP REDIRECT（不带 -A 前缀的通用部分）。 */
     private fun tcpVipRule(chain: String, ownerCond: String, n: Int): String =
-        "-A $chain $ownerCond -d ${vipAddr(n)}/32 -p tcp --dport 443 -j REDIRECT --to-ports ${tcpBasePort + n}"
+        "-A $chain ${ownerPrefix(ownerCond)}-d ${vipAddr(n)}/32 -p tcp --dport 443 -j REDIRECT --to-ports ${tcpBasePort + n}"
+
+    private fun tcpDirectRule(chain: String, ownerCond: String, destination: String? = null): String {
+        val destinationMatch = if (destination != null) "-d $destination" else "-m set --match-set $IPSET_ACTIVE dst"
+        return "-A $chain ${ownerPrefix(ownerCond)}$destinationMatch -p tcp --dport 443 -j REDIRECT --to-ports $directPort"
+    }
+
+    private fun tcpDirectRuleV6(chain: String, ownerCond: String, destination: String? = null): String {
+        val destinationMatch = if (destination != null) "-d $destination" else "-m set --match-set $IPSET_ACTIVE_V6 dst"
+        return "-A $chain ${ownerPrefix(ownerCond)}$destinationMatch -p tcp --dport 443 -j REDIRECT --to-ports $directPort"
+    }
+
+    /** Electron-like 宿主兜底：共享目标链未命中后，把该 UID 的其余 TCP/443 送入透明监听器。 */
+    private fun tcpAllRule(chain: String, ownerCond: String): String =
+        "-A $chain ${ownerPrefix(ownerCond)}-p tcp --dport 443 -j REDIRECT --to-ports $directPort"
+
+    private fun ownerPrefix(ownerCond: String): String =
+        ownerCond.trim().takeIf(String::isNotEmpty)?.plus(" ").orEmpty()
 
     /** SELECTED 的跳转条件（自身排除 + uid 匹配）。 */
     private fun selectJumpCond(uid: Int): String = "${ownerExcludeSelf()} -m owner --uid-owner $uid"
 
-    /** nat 表规则体（不含 *nat/COMMIT）。 */
-    private fun natRules(): List<String> {
+    /** nat 表规则体（不含 *nat/COMMIT）。刷新时沿用既有 OUTPUT jump，避免重复追加。 */
+    private fun natRules(includeOutputJumps: Boolean = true): List<String> {
         val rules = mutableListOf<String>()
-        rules += "-A OUTPUT -j $CHAIN_DNS"
-        rules += "-A OUTPUT -j $CHAIN_TCP"
+        if (includeOutputJumps) {
+            rules += "-A OUTPUT -j $CHAIN_DNS"
+            rules += "-A OUTPUT -j $CHAIN_TCP"
+        }
         when (mode) {
             ScopeMode.ALL_APPS -> {
                 rules += dnsRules(CHAIN_DNS, ownerCond())
-                rules += tcpVipRules(CHAIN_TCP, ownerCond())
+                rules += tcpRules(CHAIN_TCP, ownerCond())
             }
             ScopeMode.SELECTED -> {
                 for (uid in uids) {
-                    val dnsChain = uidChain(CHAIN_DNS, uid)
-                    val tcpChain = uidChain(CHAIN_TCP, uid)
-                    rules += "-A $CHAIN_DNS ${selectJumpCond(uid)} -j $dnsChain"
-                    rules += "-A $CHAIN_TCP ${selectJumpCond(uid)} -j $tcpChain"
-                    rules += dnsRules(dnsChain, "")
-                    rules += tcpVipRules(tcpChain, "")
+                    rules += "-A $CHAIN_DNS ${selectJumpCond(uid)} -j $CHAIN_DNS_SELECTED"
+                    rules += "-A $CHAIN_TCP ${selectJumpCond(uid)} -j $CHAIN_TCP_SELECTED"
+                    if (uid in captureUids) {
+                        // GHD_TCP_SEL 先处理 vIP/已知候选；返回父链后才执行全 TLS 兜底。
+                        rules += tcpAllRule(CHAIN_TCP, selectJumpCond(uid))
+                    }
+                }
+                if (uids.isNotEmpty()) {
+                    rules += dnsRules(CHAIN_DNS_SELECTED, "")
+                    rules += tcpRules(CHAIN_TCP_SELECTED, "")
                 }
             }
             ScopeMode.EXCLUDED -> {
                 val cond = ownerCond()
                 rules += dnsRules(CHAIN_DNS, cond)
-                rules += tcpVipRules(CHAIN_TCP, cond)
+                rules += tcpRules(CHAIN_TCP, cond)
             }
         }
         return rules
     }
 
     private fun dnsRules(chain: String, ownerCond: String): List<String> = listOf(
-        "-A $chain $ownerCond -p udp --dport 53 -j REDIRECT --to-ports $dnsPort",
-        "-A $chain $ownerCond -p tcp --dport 53 -j REDIRECT --to-ports $dnsTcpPort",
+        "-A $chain ${ownerPrefix(ownerCond)}-p udp --dport 53 -j REDIRECT --to-ports $dnsPort",
+        "-A $chain ${ownerPrefix(ownerCond)}-p tcp --dport 53 -j REDIRECT --to-ports $dnsTcpPort",
     )
 
     private fun tcpVipRules(chain: String, ownerCond: String): List<String> =
         (vipStart..vipEnd).map { tcpVipRule(chain, ownerCond, it) }
 
-    /** filter 表规则体（UDP 黑洞）。 */
-    private fun filterRules(): List<String> {
+    private fun tcpRules(chain: String, ownerCond: String): List<String> = buildList {
+        addAll(tcpVipRules(chain, ownerCond))
+        if (directCidrsV4.isEmpty()) return@buildList
+        if (usesIpv4IpSet()) add(tcpDirectRule(chain, ownerCond))
+        else directCidrsV4.forEach { add(tcpDirectRule(chain, ownerCond, it)) }
+    }
+
+    /** filter 表规则体（UDP 黑洞）；刷新时沿用既有 OUTPUT jump。 */
+    private fun filterRules(includeOutputJumps: Boolean = true): List<String> {
         val rules = mutableListOf<String>()
-        rules += "-A OUTPUT -j $CHAIN_UDP_DROP"
+        if (includeOutputJumps) rules += "-A OUTPUT -j $CHAIN_UDP_DROP"
         when (mode) {
-            ScopeMode.ALL_APPS -> rules += udpDropRule(CHAIN_UDP_DROP, ownerCond())
+            ScopeMode.ALL_APPS -> rules += udpRules(CHAIN_UDP_DROP, ownerCond())
             ScopeMode.SELECTED -> for (uid in uids) {
-                val chain = uidChain(CHAIN_UDP_DROP, uid)
-                rules += "-A $CHAIN_UDP_DROP ${selectJumpCond(uid)} -j $chain"
-                rules += udpDropRule(chain, "")
+                rules += "-A $CHAIN_UDP_DROP ${selectJumpCond(uid)} -j $CHAIN_UDP_SELECTED"
+                if (uid in captureUids) {
+                    // 内置 Chromium/Cronet 可能先走 QUIC；仅对显式宿主阻断 IPv4 UDP/443，促使 TCP 回退。
+                    rules += udpAllRule(CHAIN_UDP_DROP, selectJumpCond(uid))
+                }
             }
-            ScopeMode.EXCLUDED -> rules += udpDropRule(CHAIN_UDP_DROP, ownerCond())
+            ScopeMode.EXCLUDED -> rules += udpRules(CHAIN_UDP_DROP, ownerCond())
+        }
+        if (mode == ScopeMode.SELECTED && uids.isNotEmpty()) {
+            rules += udpRules(CHAIN_UDP_SELECTED, "")
         }
         return rules
     }
 
     private fun udpDropRule(chain: String, ownerCond: String): String =
-        "-A $chain $ownerCond -d $vipSubnet -p udp --dport 443 -j DROP"
+        udpRule(chain, ownerCond, vipSubnet)
+
+    private fun udpRule(chain: String, ownerCond: String, destination: String? = null): String {
+        val destinationMatch = if (destination != null) "-d $destination" else "-m set --match-set $IPSET_ACTIVE dst"
+        val action = if (rejectUdp443) "REJECT --reject-with icmp-port-unreachable" else "DROP"
+        return "-A $chain ${ownerPrefix(ownerCond)}$destinationMatch -p udp --dport 443 -j $action"
+    }
+
+    private fun udpAllRule(chain: String, ownerCond: String): String {
+        val action = if (rejectUdp443) "REJECT --reject-with icmp-port-unreachable" else "DROP"
+        return "-A $chain ${ownerPrefix(ownerCond)}-p udp --dport 443 -j $action"
+    }
+
+    private fun udpRules(chain: String, ownerCond: String): List<String> = buildList {
+        add(udpDropRule(chain, ownerCond))
+        if (directCidrsV4.isEmpty()) return@buildList
+        if (usesIpv4IpSet()) add(udpRule(chain, ownerCond))
+        else directCidrsV4.forEach { add(udpRule(chain, ownerCond, it)) }
+    }
+
+    private fun tcpRulesV6(chain: String, ownerCond: String): List<String> = buildList {
+        if (usesIpv6IpSet()) add(tcpDirectRuleV6(chain, ownerCond))
+        else directCidrsV6.forEach { add(tcpDirectRuleV6(chain, ownerCond, it)) }
+    }
+
+    private fun udpRuleV6(chain: String, ownerCond: String, destination: String? = null): String {
+        val destinationMatch = if (destination != null) "-d $destination" else "-m set --match-set $IPSET_ACTIVE_V6 dst"
+        val action = if (rejectIpv6Udp443) {
+            "REJECT --reject-with icmp6-port-unreachable"
+        } else {
+            "DROP"
+        }
+        return "-A $chain ${ownerPrefix(ownerCond)}$destinationMatch -p udp --dport 443 -j $action"
+    }
+
+    private fun udpRulesV6(chain: String, ownerCond: String): List<String> = buildList {
+        if (usesIpv6IpSet()) add(udpRuleV6(chain, ownerCond))
+        else directCidrsV6.forEach { add(udpRuleV6(chain, ownerCond, it)) }
+    }
+
+    private fun udpAllRuleV6(chain: String, ownerCond: String): String {
+        val action = if (rejectIpv6Udp443) {
+            "REJECT --reject-with icmp6-port-unreachable"
+        } else {
+            "DROP"
+        }
+        return "-A $chain ${ownerPrefix(ownerCond)}-p udp --dport 443 -j $action"
+    }
+
+    private fun natRulesV6(includeOutputJumps: Boolean = true): List<String> = buildList {
+        if (includeOutputJumps) add("-A OUTPUT -j $CHAIN_TCP_V6")
+        when (mode) {
+            ScopeMode.ALL_APPS -> addAll(tcpRulesV6(CHAIN_TCP_V6, ownerCond()))
+            ScopeMode.SELECTED -> for (uid in uids) {
+                add("-A $CHAIN_TCP_V6 ${selectJumpCond(uid)} -j $CHAIN_TCP_V6_SELECTED")
+                if (uid in captureUidsV6) {
+                    // 已知 IPv6 目标先在共享子链处理；返回后才执行该 UID 的全 TLS 兜底。
+                    add(tcpAllRule(CHAIN_TCP_V6, selectJumpCond(uid)))
+                }
+            }
+            ScopeMode.EXCLUDED -> addAll(tcpRulesV6(CHAIN_TCP_V6, ownerCond()))
+        }
+        if (mode == ScopeMode.SELECTED && uids.isNotEmpty()) {
+            addAll(tcpRulesV6(CHAIN_TCP_V6_SELECTED, ""))
+        }
+    }
+
+    private fun filterRulesV6(includeOutputJumps: Boolean = true): List<String> = buildList {
+        if (includeOutputJumps) add("-A OUTPUT -j $CHAIN_UDP_V6")
+        when (mode) {
+            ScopeMode.ALL_APPS -> addAll(udpRulesV6(CHAIN_UDP_V6, ownerCond()))
+            ScopeMode.SELECTED -> for (uid in uids) {
+                add("-A $CHAIN_UDP_V6 ${selectJumpCond(uid)} -j $CHAIN_UDP_V6_SELECTED")
+                if (uid in captureUidsV6) {
+                    // 对显式宿主阻断其余 IPv6 QUIC，促使 Chromium/Cronet 回退到 TCP。
+                    add(udpAllRuleV6(CHAIN_UDP_V6, selectJumpCond(uid)))
+                }
+            }
+            ScopeMode.EXCLUDED -> addAll(udpRulesV6(CHAIN_UDP_V6, ownerCond()))
+        }
+        if (mode == ScopeMode.SELECTED && uids.isNotEmpty()) {
+            addAll(udpRulesV6(CHAIN_UDP_V6_SELECTED, ""))
+        }
+    }
 
     /** 自有 chain 定义行（`-N` 在 restore 中 = `:CHAIN - [0:0]`）。 */
     private fun chainDefs(): List<String> {
         val defs = mutableListOf(":$CHAIN_DNS - [0:0]", ":$CHAIN_TCP - [0:0]")
-        if (mode == ScopeMode.SELECTED) {
-            for (uid in uids) {
-                defs += ":${uidChain(CHAIN_DNS, uid)} - [0:0]"
-                defs += ":${uidChain(CHAIN_TCP, uid)} - [0:0]"
-            }
+        if (mode == ScopeMode.SELECTED && uids.isNotEmpty()) {
+            defs += ":$CHAIN_DNS_SELECTED - [0:0]"
+            defs += ":$CHAIN_TCP_SELECTED - [0:0]"
         }
         return defs
     }
@@ -158,25 +334,213 @@ class FirewallRules(
     // ---------- 对外 API ----------
 
     /**
-     * 安装脚本：`*nat` / `*filter` 两表，各含 `:OUTPUT ACCEPT` + 自有 chain 定义 +
-     * OUTPUT jump + 具体规则 + COMMIT。由安装方以 `iptables-restore --noflush` 原子安装。
+     * 安装脚本：`*nat` / `*filter` 两表只声明自有 chain，再追加 OUTPUT jump 与具体规则。
+     * `--noflush` 增量脚本不得声明 `:OUTPUT ACCEPT`，否则会修改设备现有内建链策略。
      */
-    fun buildInstallScript(): String {
+    fun buildInstallScript(): String = buildIpv4Script(includeOutputJumps = true)
+
+    /**
+     * ACTIVE 代次原位刷新脚本。`--noflush` 下重新声明用户链会在表 COMMIT 时原子清空并
+     * 重建该链；既有 OUTPUT jump 始终保留，因此不会产生链缺失或重复 jump 窗口。
+     */
+    fun buildRefreshScript(): String = buildIpv4Script(includeOutputJumps = false)
+
+    private fun buildIpv4Script(includeOutputJumps: Boolean): String {
         val sb = StringBuilder()
         sb.appendLine("*nat")
-        sb.appendLine(":OUTPUT ACCEPT [0:0]")
         chainDefs().forEach { sb.appendLine(it) }
-        natRules().forEach { sb.appendLine(it) }
+        natRules(includeOutputJumps).forEach { sb.appendLine(it) }
         sb.appendLine("COMMIT")
         sb.appendLine("*filter")
-        sb.appendLine(":OUTPUT ACCEPT [0:0]")
         sb.appendLine(":$CHAIN_UDP_DROP - [0:0]")
-        if (mode == ScopeMode.SELECTED) {
-            uids.forEach { sb.appendLine(":${uidChain(CHAIN_UDP_DROP, it)} - [0:0]") }
+        if (mode == ScopeMode.SELECTED && uids.isNotEmpty()) {
+            sb.appendLine(":$CHAIN_UDP_SELECTED - [0:0]")
         }
-        filterRules().forEach { sb.appendLine(it) }
+        filterRules(includeOutputJumps).forEach { sb.appendLine(it) }
         sb.appendLine("COMMIT")
-        return sb.toString().trimEnd()
+        // legacy iptables-restore 要求最后一个 COMMIT 也以换行结束；trimEnd() 会让部分
+        // Android 工具箱在 EOF 处报 `Bad argument COMMIT`。
+        return sb.toString()
+    }
+
+    /** 独立交给 ip6tables-restore；空串表示本代没有可安装的 IPv6 目标。 */
+    fun buildIpv6InstallScript(): String =
+        if (!usesIpv6RealIpRedirect()) "" else buildIpv6Script(includeOutputJumps = true)
+
+    /**
+     * IPv6 代次转换：
+     * - disabled -> enabled：首次安装并挂 OUTPUT jump；
+     * - enabled -> enabled：保留 jump，原位替换链内容；
+     * - enabled -> disabled：同一 restore 表事务内移除 jump 并清空旧链。
+     */
+    fun buildIpv6RefreshScript(previous: FirewallRules): String = when {
+        !previous.usesIpv6RealIpRedirect() && !usesIpv6RealIpRedirect() -> ""
+        !previous.usesIpv6RealIpRedirect() -> buildIpv6InstallScript()
+        usesIpv6RealIpRedirect() -> buildIpv6Script(includeOutputJumps = false)
+        else -> previous.buildIpv6DisableScript()
+    }
+
+    private fun buildIpv6Script(includeOutputJumps: Boolean): String {
+        val sb = StringBuilder()
+        sb.appendLine("*nat")
+        sb.appendLine(":$CHAIN_TCP_V6 - [0:0]")
+        if (mode == ScopeMode.SELECTED && uids.isNotEmpty()) {
+            sb.appendLine(":$CHAIN_TCP_V6_SELECTED - [0:0]")
+        }
+        natRulesV6(includeOutputJumps).forEach { sb.appendLine(it) }
+        sb.appendLine("COMMIT")
+        sb.appendLine("*filter")
+        sb.appendLine(":$CHAIN_UDP_V6 - [0:0]")
+        if (mode == ScopeMode.SELECTED && uids.isNotEmpty()) {
+            sb.appendLine(":$CHAIN_UDP_V6_SELECTED - [0:0]")
+        }
+        filterRulesV6(includeOutputJumps).forEach { sb.appendLine(it) }
+        sb.appendLine("COMMIT")
+        return sb.toString()
+    }
+
+    private fun buildIpv6DisableScript(): String {
+        val (nat, filter) = ownedIpv6ChainNames()
+        val sb = StringBuilder()
+        sb.appendLine("*nat")
+        nat.forEach { sb.appendLine(":$it - [0:0]") }
+        sb.appendLine("-D OUTPUT -j $CHAIN_TCP_V6")
+        sb.appendLine("COMMIT")
+        sb.appendLine("*filter")
+        filter.forEach { sb.appendLine(":$it - [0:0]") }
+        sb.appendLine("-D OUTPUT -j $CHAIN_UDP_V6")
+        sb.appendLine("COMMIT")
+        return sb.toString()
+    }
+
+    fun usesRealIpRedirect(): Boolean =
+        captureUids.isNotEmpty() || directCidrsV4.isNotEmpty() || directCidrsV6.isNotEmpty()
+
+    fun usesIpv6RealIpRedirect(): Boolean =
+        directCidrsV6.isNotEmpty() || captureUidsV6.isNotEmpty()
+
+    fun usesIpSet(): Boolean = usesIpv4IpSet() || usesIpv6IpSet()
+
+    private fun usesIpv4IpSet(): Boolean = useIpSet && directCidrsV4.isNotEmpty()
+
+    private fun usesIpv6IpSet(): Boolean = useIpSet && directCidrsV6.isNotEmpty()
+
+    fun directDestinationCount(): Int = directCidrsV4.size
+
+    fun directIpv6DestinationCount(): Int = directCidrsV6.size
+
+    fun fullTlsCaptureUidCount(): Int = captureUids.size
+
+    /** ipset 探测出现假阳性时保留同一 scope/代次，切换到有上限的逐 CIDR 规则。 */
+    fun withoutIpSet(): FirewallRules = FirewallRules(
+        selfUid = selfUid,
+        dnsPort = dnsPort,
+        dnsTcpPort = dnsTcpPort,
+        tcpBasePort = tcpBasePort,
+        vipSubnet = vipSubnet,
+        vipStart = vipStart,
+        vipEnd = vipEnd,
+        scopeUids = scopeUids,
+        scopeInclude = scopeInclude,
+        fullTlsCaptureUids = fullTlsCaptureUids,
+        directDestinations = directDestinations,
+        enableRealIpRedirect = enableRealIpRedirect,
+        enableIpv6Redirect = enableIpv6Redirect,
+        directPort = directPort,
+        useIpSet = false,
+        rejectUdp443 = rejectUdp443,
+        rejectIpv6Udp443 = rejectIpv6Udp443,
+        generation = generation,
+    )
+
+    /** 安装前构造同类型临时集合并 swap；chain 始终只引用固定的 active 名称。 */
+    fun buildIpSetInstallCommands(): List<String> {
+        return buildList {
+            if (usesIpv4IpSet()) addAll(ipSetInstallCommands(IPSET_ACTIVE, IPSET_NEXT, "inet", directCidrsV4))
+            if (usesIpv6IpSet()) addAll(ipSetInstallCommands(IPSET_ACTIVE_V6, IPSET_NEXT_V6, "inet6", directCidrsV6))
+        }
+    }
+
+    private fun ipSetInstallCommands(
+        active: String,
+        next: String,
+        family: String,
+        cidrs: List<String>,
+    ): List<String> = buildList {
+        add("ipset create $active hash:net family $family timeout $IPSET_LEASE_SECONDS -exist")
+        add("ipset create $next hash:net family $family timeout $IPSET_LEASE_SECONDS -exist")
+        add("ipset flush $next")
+        cidrs.forEach { add("ipset add $next $it timeout $IPSET_LEASE_SECONDS -exist") }
+        add("ipset swap $next $active")
+        add("ipset destroy $next")
+    }
+
+    /** 服务每 5 秒调用；若服务死亡，元素约 20 秒后自然过期，规则链变成 fail-open。 */
+    fun buildIpSetLeaseRefreshCommands(): List<String> =
+        buildList {
+            if (usesIpv4IpSet()) {
+                directCidrsV4.forEach { add("ipset add $IPSET_ACTIVE $it timeout $IPSET_LEASE_SECONDS -exist") }
+            }
+            if (usesIpv6IpSet()) {
+                directCidrsV6.forEach { add("ipset add $IPSET_ACTIVE_V6 $it timeout $IPSET_LEASE_SECONDS -exist") }
+            }
+        }
+
+    fun buildIpSetCleanupCommands(): List<String> = listOf(
+        "ipset destroy $IPSET_NEXT",
+        "ipset destroy $IPSET_ACTIVE",
+        "ipset destroy $IPSET_NEXT_V6",
+        "ipset destroy $IPSET_ACTIVE_V6",
+    )
+
+    /**
+     * 原位刷新提交后，只清理新代次不再使用的孤儿子链/IPv6 链与 ipset。
+     * 主 IPv4 链始终被复用，不会出现在结果中；命令均可 best-effort 幂等执行。
+     */
+    fun buildPostRefreshCleanupCommands(next: FirewallRules): List<String> = buildList {
+        val (oldNat, oldFilter) = ownedChainNames()
+        val (nextNat, nextFilter) = next.ownedChainNames()
+        appendObsoleteChainCleanup(
+            binary = "iptables",
+            obsoleteNat = oldNat.filterNot(nextNat::contains),
+            obsoleteFilter = oldFilter.filterNot(nextFilter::contains),
+        )
+
+        val (oldNatV6, oldFilterV6) = ownedIpv6ChainNames()
+        val (nextNatV6, nextFilterV6) = next.ownedIpv6ChainNames()
+        val obsoleteNatV6 = if (usesIpv6RealIpRedirect()) {
+            oldNatV6.filterNot { next.usesIpv6RealIpRedirect() && it in nextNatV6 }
+        } else {
+            emptyList()
+        }
+        val obsoleteFilterV6 = if (usesIpv6RealIpRedirect()) {
+            oldFilterV6.filterNot { next.usesIpv6RealIpRedirect() && it in nextFilterV6 }
+        } else {
+            emptyList()
+        }
+        if (CHAIN_TCP_V6 in obsoleteNatV6) add("ip6tables -t nat -D OUTPUT -j $CHAIN_TCP_V6")
+        if (CHAIN_UDP_V6 in obsoleteFilterV6) add("ip6tables -t filter -D OUTPUT -j $CHAIN_UDP_V6")
+        appendObsoleteChainCleanup("ip6tables", obsoleteNatV6, obsoleteFilterV6)
+
+        if (usesIpv4IpSet() && !next.usesIpv4IpSet()) {
+            add("ipset destroy $IPSET_NEXT")
+            add("ipset destroy $IPSET_ACTIVE")
+        }
+        if (usesIpv6IpSet() && !next.usesIpv6IpSet()) {
+            add("ipset destroy $IPSET_NEXT_V6")
+            add("ipset destroy $IPSET_ACTIVE_V6")
+        }
+    }
+
+    private fun MutableList<String>.appendObsoleteChainCleanup(
+        binary: String,
+        obsoleteNat: List<String>,
+        obsoleteFilter: List<String>,
+    ) {
+        obsoleteNat.forEach { add("$binary -t nat -F $it") }
+        obsoleteFilter.forEach { add("$binary -t filter -F $it") }
+        obsoleteNat.forEach { add("$binary -t nat -X $it") }
+        obsoleteFilter.forEach { add("$binary -t filter -X $it") }
     }
 
     /**
@@ -195,6 +559,15 @@ class FirewallRules(
         // 3) 删自己 chain
         nat.forEach { cmds += "iptables -t nat -X $it" }
         filter.forEach { cmds += "iptables -t filter -X $it" }
+        if (usesIpv6RealIpRedirect()) {
+            val (natV6, filterV6) = ownedIpv6ChainNames()
+            natV6.filter { it == CHAIN_TCP_V6 }.forEach { cmds += "ip6tables -t nat -D OUTPUT -j $it" }
+            filterV6.filter { it == CHAIN_UDP_V6 }.forEach { cmds += "ip6tables -t filter -D OUTPUT -j $it" }
+            natV6.forEach { cmds += "ip6tables -t nat -F $it" }
+            filterV6.forEach { cmds += "ip6tables -t filter -F $it" }
+            natV6.forEach { cmds += "ip6tables -t nat -X $it" }
+            filterV6.forEach { cmds += "ip6tables -t filter -X $it" }
+        }
         return cmds
     }
 
@@ -202,12 +575,21 @@ class FirewallRules(
     fun ownedChainNames(): Pair<List<String>, List<String>> {
         val nat = mutableListOf(CHAIN_DNS, CHAIN_TCP)
         val filter = mutableListOf(CHAIN_UDP_DROP)
-        if (mode == ScopeMode.SELECTED) {
-            for (uid in uids) {
-                nat += uidChain(CHAIN_DNS, uid)
-                nat += uidChain(CHAIN_TCP, uid)
-                filter += uidChain(CHAIN_UDP_DROP, uid)
-            }
+        if (mode == ScopeMode.SELECTED && uids.isNotEmpty()) {
+            nat += CHAIN_DNS_SELECTED
+            nat += CHAIN_TCP_SELECTED
+            filter += CHAIN_UDP_SELECTED
+        }
+        return nat to filter
+    }
+
+    /** 本规则集拥有的 IPv6 chain 名（nat, filter）。 */
+    fun ownedIpv6ChainNames(): Pair<List<String>, List<String>> {
+        val nat = mutableListOf(CHAIN_TCP_V6)
+        val filter = mutableListOf(CHAIN_UDP_V6)
+        if (mode == ScopeMode.SELECTED && uids.isNotEmpty()) {
+            nat += CHAIN_TCP_V6_SELECTED
+            filter += CHAIN_UDP_V6_SELECTED
         }
         return nat to filter
     }
@@ -227,18 +609,22 @@ class FirewallRules(
                 markers += tcpVipRule(CHAIN_TCP, ownerCond(), vipEnd)
                 markers += dnsRules(CHAIN_DNS, ownerCond())
                 markers += udpDropRule(CHAIN_UDP_DROP, ownerCond())
+                addDirectMarkers(markers, CHAIN_TCP, CHAIN_UDP_DROP, ownerCond())
             }
             ScopeMode.SELECTED -> {
-                if (uids.isEmpty()) return markers // 空 SELECTED：仅 OUTPUT jump 标记
-                val uid = uids.first()
-                val dnsChain = uidChain(CHAIN_DNS, uid)
-                val tcpChain = uidChain(CHAIN_TCP, uid)
-                val dropChain = uidChain(CHAIN_UDP_DROP, uid)
-                markers += "-A $CHAIN_TCP ${selectJumpCond(uid)} -j $tcpChain"
-                markers += tcpVipRule(tcpChain, "", vipStart)
-                markers += tcpVipRule(tcpChain, "", vipEnd)
-                markers += dnsRules(dnsChain, "")
-                markers += udpDropRule(dropChain, "")
+                if (uids.isNotEmpty()) {
+                    val uid = uids.first()
+                    markers += "-A $CHAIN_TCP ${selectJumpCond(uid)} -j $CHAIN_TCP_SELECTED"
+                    markers += tcpVipRule(CHAIN_TCP_SELECTED, "", vipStart)
+                    markers += tcpVipRule(CHAIN_TCP_SELECTED, "", vipEnd)
+                    markers += dnsRules(CHAIN_DNS_SELECTED, "")
+                    markers += udpDropRule(CHAIN_UDP_SELECTED, "")
+                    addDirectMarkers(markers, CHAIN_TCP_SELECTED, CHAIN_UDP_SELECTED, "")
+                    captureUids.firstOrNull()?.let { captureUid ->
+                        markers += tcpAllRule(CHAIN_TCP, selectJumpCond(captureUid))
+                        markers += udpAllRule(CHAIN_UDP_DROP, selectJumpCond(captureUid))
+                    }
+                }
             }
             ScopeMode.EXCLUDED -> {
                 val cond = ownerCond()
@@ -246,9 +632,102 @@ class FirewallRules(
                 markers += tcpVipRule(CHAIN_TCP, cond, vipEnd)
                 markers += dnsRules(CHAIN_DNS, cond)
                 markers += udpDropRule(CHAIN_UDP_DROP, cond)
+                addDirectMarkers(markers, CHAIN_TCP, CHAIN_UDP_DROP, cond)
             }
         }
+        addIpv6Markers(markers)
         return markers
+    }
+
+    private fun addIpv6Markers(markers: MutableList<String>) {
+        if (!usesIpv6RealIpRedirect()) return
+        markers += "-A OUTPUT -j $CHAIN_TCP_V6"
+        markers += "-A OUTPUT -j $CHAIN_UDP_V6"
+        when (mode) {
+            ScopeMode.ALL_APPS -> {
+                if (directCidrsV6.isNotEmpty()) {
+                    addDirectMarkersV6(markers, CHAIN_TCP_V6, CHAIN_UDP_V6, ownerCond())
+                }
+            }
+            ScopeMode.SELECTED -> {
+                if (uids.isEmpty()) return
+                val uid = uids.first()
+                markers += "-A $CHAIN_TCP_V6 ${selectJumpCond(uid)} -j $CHAIN_TCP_V6_SELECTED"
+                markers += "-A $CHAIN_UDP_V6 ${selectJumpCond(uid)} -j $CHAIN_UDP_V6_SELECTED"
+                if (directCidrsV6.isNotEmpty()) {
+                    addDirectMarkersV6(markers, CHAIN_TCP_V6_SELECTED, CHAIN_UDP_V6_SELECTED, "")
+                }
+                captureUidsV6.firstOrNull()?.let { captureUid ->
+                    markers += tcpAllRule(CHAIN_TCP_V6, selectJumpCond(captureUid))
+                    markers += udpAllRuleV6(CHAIN_UDP_V6, selectJumpCond(captureUid))
+                }
+            }
+            ScopeMode.EXCLUDED -> {
+                if (directCidrsV6.isNotEmpty()) {
+                    addDirectMarkersV6(markers, CHAIN_TCP_V6, CHAIN_UDP_V6, ownerCond())
+                }
+            }
+        }
+    }
+
+    /**
+     * 校验只读取 OUTPUT 与本代实际使用的 GHD_* 链，避免多 UID 规则让完整
+     * `iptables-save` 输出达到数百 KiB 后被命令捕获上限截断。
+     */
+    fun verificationCommands(): List<String> = buildList {
+        add("iptables -t nat -S OUTPUT")
+        add("iptables -t filter -S OUTPUT")
+        add("iptables -t nat -S $CHAIN_DNS")
+        add("iptables -t nat -S $CHAIN_TCP")
+        add("iptables -t filter -S $CHAIN_UDP_DROP")
+        if (mode == ScopeMode.SELECTED && uids.isNotEmpty()) {
+            add("iptables -t nat -S $CHAIN_DNS_SELECTED")
+            add("iptables -t nat -S $CHAIN_TCP_SELECTED")
+            add("iptables -t filter -S $CHAIN_UDP_SELECTED")
+        }
+        if (usesIpv6RealIpRedirect()) {
+            add("ip6tables -t nat -S OUTPUT")
+            add("ip6tables -t filter -S OUTPUT")
+            add("ip6tables -t nat -S $CHAIN_TCP_V6")
+            add("ip6tables -t filter -S $CHAIN_UDP_V6")
+            if (mode == ScopeMode.SELECTED && uids.isNotEmpty()) {
+                add("ip6tables -t nat -S $CHAIN_TCP_V6_SELECTED")
+                add("ip6tables -t filter -S $CHAIN_UDP_V6_SELECTED")
+            }
+        }
+    }
+
+    private fun addDirectMarkers(
+        markers: MutableList<String>,
+        tcpChain: String,
+        udpChain: String,
+        ownerCond: String,
+    ) {
+        if (directCidrsV4.isEmpty()) return
+        if (usesIpv4IpSet()) {
+            markers += tcpDirectRule(tcpChain, ownerCond)
+            markers += udpRule(udpChain, ownerCond)
+        } else {
+            markers += tcpDirectRule(tcpChain, ownerCond, directCidrsV4.first())
+            markers += tcpDirectRule(tcpChain, ownerCond, directCidrsV4.last())
+            markers += udpRule(udpChain, ownerCond, directCidrsV4.first())
+        }
+    }
+
+    private fun addDirectMarkersV6(
+        markers: MutableList<String>,
+        tcpChain: String,
+        udpChain: String,
+        ownerCond: String,
+    ) {
+        if (usesIpv6IpSet()) {
+            markers += tcpDirectRuleV6(tcpChain, ownerCond)
+            markers += udpRuleV6(udpChain, ownerCond)
+        } else {
+            markers += tcpDirectRuleV6(tcpChain, ownerCond, directCidrsV6.first())
+            markers += tcpDirectRuleV6(tcpChain, ownerCond, directCidrsV6.last())
+            markers += udpRuleV6(udpChain, ownerCond, directCidrsV6.first())
+        }
     }
 
     companion object {
@@ -256,7 +735,19 @@ class FirewallRules(
         const val CHAIN_DNS = "GHD_DNS"
         const val CHAIN_TCP = "GHD_TCP"
         const val CHAIN_UDP_DROP = "GHD_UDP_DROP"
-
-        fun uidChain(base: String, uid: Int): String = "${base}_UID_$uid"
+        const val CHAIN_TCP_V6 = "GHD_6_TCP"
+        const val CHAIN_UDP_V6 = "GHD_6_UDP"
+        const val CHAIN_DNS_SELECTED = "GHD_DNS_SEL"
+        const val CHAIN_TCP_SELECTED = "GHD_TCP_SEL"
+        const val CHAIN_UDP_SELECTED = "GHD_UDP_SEL"
+        const val CHAIN_TCP_V6_SELECTED = "GHD_6_TCP_SEL"
+        const val CHAIN_UDP_V6_SELECTED = "GHD_6_UDP_SEL"
+        const val IPSET_ACTIVE = "GHD_DST"
+        const val IPSET_NEXT = "GHD_DST_NEXT"
+        const val IPSET_ACTIVE_V6 = "GHD_DST6"
+        const val IPSET_NEXT_V6 = "GHD_DST6_NEXT"
+        const val IPSET_LEASE_SECONDS = 20
+        const val MAX_INLINE_DESTINATIONS = 128
+        const val MAX_IPSET_DESTINATIONS = 512
     }
 }

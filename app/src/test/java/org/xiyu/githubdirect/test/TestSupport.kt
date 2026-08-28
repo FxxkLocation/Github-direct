@@ -1,6 +1,8 @@
 package org.xiyu.githubdirect.test
 
 import org.xiyu.githubdirect.core.data.SettingsStore
+import org.xiyu.githubdirect.core.data.ScopeDefaults
+import org.xiyu.githubdirect.core.data.Nat64FallbackConfig
 import org.xiyu.githubdirect.core.dns.DnsPacketCodec
 import org.xiyu.githubdirect.core.net.NetworkBinder
 import org.xiyu.githubdirect.core.rules.AppScopeMode
@@ -19,8 +21,14 @@ class InMemorySettingsStore : SettingsStore {
     private val hosts = ConcurrentHashMap<String, Pair<String, Long>>()
 
     private var backendMode: BackendMode = BackendMode.AUTO
-    private var scopeMode: AppScopeMode = AppScopeMode.ALL_APPS
-    private var scopePackages: Set<String> = emptySet()
+    private var scopeMode: AppScopeMode = ScopeDefaults.MODE
+    private var scopePackages: Set<String> = ScopeDefaults.PACKAGES
+    private var embeddedTlsPackages: Set<String> = emptySet()
+    private var adaptiveCandidates = true
+    private var realIpRedirect = true
+    private var tlsFragmentV2 = true
+    private var tlsTermination = false
+    private var nat64Fallback = Nat64FallbackConfig.DISABLED
 
     override fun isServiceEnabled(id: String, default: Boolean): Boolean = enabled[id] ?: default
 
@@ -55,6 +63,42 @@ class InMemorySettingsStore : SettingsStore {
 
     override fun setScopedPackages(packages: Set<String>) {
         scopePackages = LinkedHashSet(packages)
+    }
+
+    override fun embeddedTlsCapturePackages(): Set<String> = LinkedHashSet(embeddedTlsPackages)
+
+    override fun setEmbeddedTlsCapturePackages(packages: Set<String>) {
+        embeddedTlsPackages = LinkedHashSet(packages)
+    }
+
+    override fun isAdaptiveCandidatesEnabled(): Boolean = adaptiveCandidates
+
+    override fun setAdaptiveCandidatesEnabled(enabled: Boolean) {
+        adaptiveCandidates = enabled
+    }
+
+    override fun isRealIpRedirectEnabled(): Boolean = realIpRedirect
+
+    override fun setRealIpRedirectEnabled(enabled: Boolean) {
+        realIpRedirect = enabled
+    }
+
+    override fun isTlsFragmentV2Enabled(): Boolean = tlsFragmentV2
+
+    override fun setTlsFragmentV2Enabled(enabled: Boolean) {
+        tlsFragmentV2 = enabled
+    }
+
+    override fun isTlsTerminationEnabled(): Boolean = tlsTermination
+
+    override fun setTlsTerminationEnabled(enabled: Boolean) {
+        tlsTermination = enabled
+    }
+
+    override fun nat64FallbackConfig(): Nat64FallbackConfig = nat64Fallback.copy()
+
+    override fun setNat64FallbackConfig(config: Nat64FallbackConfig) {
+        nat64Fallback = config.normalized().copy()
     }
 }
 

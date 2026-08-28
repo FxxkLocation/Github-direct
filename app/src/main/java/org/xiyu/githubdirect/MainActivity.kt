@@ -8,18 +8,21 @@ import android.content.Intent
 import android.net.Uri
 import android.net.VpnService
 import android.os.Bundle
+import android.text.InputType
 import android.view.View
 import android.view.animation.AccelerateDecelerateInterpolator
-import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.ImageView
-import android.widget.ListView
+import android.widget.EditText
+import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.RadioGroup
 import android.widget.Switch
 import android.widget.TextView
 import io.github.libxposed.service.XposedService
 import org.xiyu.githubdirect.core.data.DiagLog
+import org.xiyu.githubdirect.core.data.Nat64FallbackConfig
+import org.xiyu.githubdirect.core.data.ScopeDefaults
 import org.xiyu.githubdirect.core.dns.DoHServers
 import org.xiyu.githubdirect.core.dns.EndpointResolver
 import org.xiyu.githubdirect.core.dns.IpAddresses
@@ -38,10 +41,17 @@ import org.xiyu.githubdirect.data.RealDiagOps
 import org.xiyu.githubdirect.data.ServiceDiagResult
 import org.xiyu.githubdirect.data.Stage
 import org.xiyu.githubdirect.data.StageStatus
+import org.xiyu.githubdirect.root.RootRelayService
+import org.xiyu.githubdirect.root.AndroidSystemCaInstaller
+import org.xiyu.githubdirect.root.DeviceCertificateAuthority
+import org.xiyu.githubdirect.root.SniGateRuntime
+import org.xiyu.githubdirect.root.SystemCaState
+import org.xiyu.githubdirect.root.SystemCaStatus
 import org.xiyu.githubdirect.vpn.DnsVpnService
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 class MainActivity : Activity(), App.ServiceStateListener {
 
@@ -68,9 +78,31 @@ class MainActivity : Activity(), App.ServiceStateListener {
     private lateinit var backendStatusText: TextView
     private lateinit var privateDnsWarning: TextView
     private lateinit var btnPickApps: Button
+    private lateinit var btnPickEmbeddedTls: Button
+    private lateinit var rootAutoStartSwitch: Switch
+    private lateinit var adaptiveCandidatesSwitch: Switch
+    private lateinit var realIpRedirectSwitch: Switch
+    private lateinit var tlsFragmentV2Switch: Switch
+    private lateinit var tlsTerminationSwitch: Switch
+    private lateinit var nat64FallbackSwitch: Switch
+    private lateinit var nat64StatusText: TextView
+    private lateinit var btnConfigureNat64: Button
+    private lateinit var caStatusText: TextView
+    private lateinit var btnInstallCa: Button
+    private lateinit var btnRemoveCa: Button
     private var backendManager: BackendManager? = null
+    private var frameworkSummary: String = ""
     private var syncAnimatorSet: AnimatorSet? = null
     private var fullRunner: DiagnosticsRunner? = null
+    private val backendExecutor = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "GHD-Backend").apply { isDaemon = true }
+    }
+    private val rootProbeInFlight = AtomicBoolean(false)
+    private val caStatusInFlight = AtomicBoolean(false)
+    private val caOperationInFlight = AtomicBoolean(false)
+    @Volatile private var lastSystemCaStatus = SystemCaStatus(SystemCaState.NOT_GENERATED)
+    private var tlsTerminationUiUpdate = false
+    private var nat64UiUpdate = false
 
     private val VPN_REQUEST_CODE = 100
 
@@ -81,6 +113,15 @@ class MainActivity : Activity(), App.ServiceStateListener {
         const val DIAG_TCP_TIMEOUT_MS = 3000
         const val DIAG_OVERALL_TIMEOUT_MS = 12_000L
         const val DIAG_FULL_DOH_TIMEOUT_MS = 3000
+        const val HOOK_HEARTBEAT_STALE_MS = 120_000L
+        val PLATFORM_CLIENT_PACKAGES = setOf(
+            "com.google.android.googlequicksearchbox",
+            "com.google.android.youtube",
+            "com.google.android.apps.youtube.music",
+            "com.discord",
+            "com.discord.canary",
+            "com.openai.chatgpt",
+        )
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -110,6 +151,18 @@ class MainActivity : Activity(), App.ServiceStateListener {
         backendStatusText = findViewById(R.id.backend_status)
         privateDnsWarning = findViewById(R.id.private_dns_warning)
         btnPickApps = findViewById(R.id.btn_pick_apps)
+        btnPickEmbeddedTls = findViewById(R.id.btn_pick_embedded_tls)
+        rootAutoStartSwitch = findViewById(R.id.switch_root_autostart)
+        adaptiveCandidatesSwitch = findViewById(R.id.switch_adaptive_candidates)
+        realIpRedirectSwitch = findViewById(R.id.switch_real_ip_redirect)
+        tlsFragmentV2Switch = findViewById(R.id.switch_tls_fragment_v2)
+        tlsTerminationSwitch = findViewById(R.id.switch_tls_termination)
+        nat64FallbackSwitch = findViewById(R.id.switch_nat64_fallback)
+        nat64StatusText = findViewById(R.id.nat64_status)
+        btnConfigureNat64 = findViewById(R.id.btn_configure_nat64)
+        caStatusText = findViewById(R.id.ca_status)
+        btnInstallCa = findViewById(R.id.btn_install_ca)
+        btnRemoveCa = findViewById(R.id.btn_remove_ca)
 
         statusText.text = getString(R.string.status_waiting)
         frameworkText.text = ""
@@ -120,6 +173,7 @@ class MainActivity : Activity(), App.ServiceStateListener {
         DirectEngine.settings()?.let { s ->
             diagSwitch.isChecked = s.isDiagEnabled()
             DiagLog.setEnabled(s.isDiagEnabled())
+            s.ensureHookHeartbeatToken()
         }
         // 服务开关变更 → 刷新统计行
         DirectEngine.registry()?.addChangeListener { _, _ ->
@@ -140,6 +194,7 @@ class MainActivity : Activity(), App.ServiceStateListener {
         starBtn.setOnClickListener { openUrl("https://github.com/FxxkLocation/Github-direct") }
 
         initBackendControls()
+        probeRootAsync()
         updateVpnUi()
         refreshStats()
         (application as App).addServiceStateListener(this)
@@ -150,6 +205,13 @@ class MainActivity : Activity(), App.ServiceStateListener {
         refreshStats()
         updateVpnUi()
         refreshPrivateDnsWarning()
+        refreshHookHeartbeat()
+        refreshCaStatusAsync()
+        refreshNat64Status()
+        val caps = backendManager?.cachedRootCapabilities()
+        if (caps?.requiredOk() != true) {
+            probeRootAsync()
+        }
     }
 
     // ==================== 后端模式 / 应用范围（§15/§40） ====================
@@ -167,12 +229,20 @@ class MainActivity : Activity(), App.ServiceStateListener {
             }
         )
         scopeGroup.check(
-            when (settings?.appScopeMode() ?: AppScopeMode.ALL_APPS) {
+            when (settings?.appScopeMode() ?: ScopeDefaults.MODE) {
                 AppScopeMode.SELECTED_APPS -> R.id.rb_scope_selected
                 AppScopeMode.EXCLUDED_APPS -> R.id.rb_scope_excluded
                 AppScopeMode.ALL_APPS -> R.id.rb_scope_all
             }
         )
+        btnPickEmbeddedTls.isEnabled = settings?.appScopeMode() == AppScopeMode.SELECTED_APPS
+        rootAutoStartSwitch.isChecked = settings?.isRootAutoStartEnabled() == true
+        adaptiveCandidatesSwitch.isChecked = settings?.isAdaptiveCandidatesEnabled() != false
+        realIpRedirectSwitch.isChecked = settings?.isRealIpRedirectEnabled() != false
+        tlsFragmentV2Switch.isChecked = settings?.isTlsFragmentV2Enabled() != false
+        tlsTerminationSwitch.isChecked = settings?.isTlsTerminationEnabled() == true
+        nat64FallbackSwitch.isChecked = settings?.nat64FallbackConfig()?.enabled == true
+        refreshNat64Status()
         modeGroup.setOnCheckedChangeListener { _, checkedId ->
             val mode = when (checkedId) {
                 R.id.rb_mode_root -> BackendMode.ROOT_TRANSPARENT
@@ -190,8 +260,86 @@ class MainActivity : Activity(), App.ServiceStateListener {
                 else -> AppScopeMode.ALL_APPS
             }
             DirectEngine.settings()?.setAppScopeMode(mode)
+            btnPickEmbeddedTls.isEnabled = mode == AppScopeMode.SELECTED_APPS
+            requestRootRuleRefreshIfActive()
         }
         btnPickApps.setOnClickListener { showAppPicker() }
+        btnPickEmbeddedTls.setOnClickListener { showEmbeddedTlsPicker() }
+        rootAutoStartSwitch.setOnCheckedChangeListener { _, checked ->
+            DirectEngine.settings()?.setRootAutoStartEnabled(checked)
+        }
+        adaptiveCandidatesSwitch.setOnCheckedChangeListener { _, checked ->
+            DirectEngine.settings()?.setAdaptiveCandidatesEnabled(checked)
+            requestRootRuleRefreshIfActive()
+        }
+        realIpRedirectSwitch.setOnCheckedChangeListener { _, checked ->
+            DirectEngine.settings()?.setRealIpRedirectEnabled(checked)
+            requestRootRuleRefreshIfActive()
+        }
+        tlsFragmentV2Switch.setOnCheckedChangeListener { _, checked ->
+            DirectEngine.settings()?.setTlsFragmentV2Enabled(checked)
+            requestRootRuleRefreshIfActive()
+        }
+        tlsTerminationSwitch.setOnCheckedChangeListener { _, checked ->
+            if (tlsTerminationUiUpdate) return@setOnCheckedChangeListener
+            if (!checked) {
+                DirectEngine.settings()?.setTlsTerminationEnabled(false)
+                disableNat64Fallback()
+                requestRootRuleRefreshIfActive()
+                return@setOnCheckedChangeListener
+            }
+            if (lastSystemCaStatus.state != SystemCaState.TRUSTED) {
+                setTlsTerminationSwitch(false)
+                dnsResultText.text = getString(R.string.ca_not_trusted)
+                refreshCaStatusAsync()
+                return@setOnCheckedChangeListener
+            }
+            AlertDialog.Builder(this)
+                .setTitle(getString(R.string.ca_enable_title))
+                .setMessage(getString(R.string.ca_enable_message))
+                .setPositiveButton(getString(R.string.dialog_ok)) { _, _ ->
+                    DirectEngine.settings()?.setTlsTerminationEnabled(true)
+                    requestRootReprobeIfActive()
+                }
+                .setNegativeButton(getString(R.string.dialog_cancel)) { _, _ ->
+                    setTlsTerminationSwitch(false)
+                }
+                .setOnCancelListener { setTlsTerminationSwitch(false) }
+                .show()
+        }
+        nat64FallbackSwitch.setOnCheckedChangeListener { _, checked ->
+            if (nat64UiUpdate) return@setOnCheckedChangeListener
+            val store = DirectEngine.settings() ?: return@setOnCheckedChangeListener
+            if (!checked) {
+                val current = store.nat64FallbackConfig()
+                store.setNat64FallbackConfig(current.copy(enabled = false, riskAccepted = false))
+                refreshNat64Status()
+                requestRootReprobeIfActive()
+                return@setOnCheckedChangeListener
+            }
+            setNat64FallbackSwitch(false)
+            if (!tlsTerminationSwitch.isChecked || lastSystemCaStatus.state != SystemCaState.TRUSTED) {
+                dnsResultText.text = getString(R.string.nat64_requires_tls)
+                refreshNat64Status()
+                return@setOnCheckedChangeListener
+            }
+            if (DirectEngine.enabledNat64FallbackDomains().isEmpty()) {
+                dnsResultText.text = getString(R.string.nat64_requires_openai)
+                refreshNat64Status()
+                return@setOnCheckedChangeListener
+            }
+            val prepared = store.nat64FallbackConfig().copy(enabled = true, riskAccepted = true)
+            if (prepared.activationOrNull() == null) {
+                showNat64ConfigDialog(enableAfterSave = true)
+            } else {
+                confirmNat64Activation(prepared)
+            }
+        }
+        btnConfigureNat64.setOnClickListener {
+            showNat64ConfigDialog(enableAfterSave = false)
+        }
+        btnInstallCa.setOnClickListener { confirmInstallCa() }
+        btnRemoveCa.setOnClickListener { confirmRemoveCa() }
         backendManager?.addBackendListener { _, active, message ->
             runOnUiThread {
                 refreshBackendStatus()
@@ -209,34 +357,441 @@ class MainActivity : Activity(), App.ServiceStateListener {
         val base = when {
             mode == BackendMode.ROOT_TRANSPARENT && active -> R.string.backend_status_root
             mode == BackendMode.VPN && active -> R.string.backend_status_vpn
+            mode == BackendMode.XPOSED_ONLY && active && bm.isRootBackendActive() ->
+                R.string.backend_status_xposed_root
             mode == BackendMode.XPOSED_ONLY && active -> R.string.backend_status_xposed
             mode == BackendMode.ROOT_TRANSPARENT && !active -> R.string.backend_status_failed
             else -> R.string.backend_status_none
         }
         val caps = bm.cachedRootCapabilities()
         val capsLine = when {
+            rootProbeInFlight.get() && caps == null -> getString(R.string.root_caps_probing)
             caps == null -> getString(R.string.root_caps_unknown)
+            caps.requiredOk() && caps.ipv6Netfilter -> getString(R.string.root_caps_ok_ipv6)
             caps.requiredOk() -> getString(R.string.root_caps_ok)
-            else -> getString(R.string.root_caps_no)
+            else -> getString(
+                R.string.root_caps_no,
+                caps.missingRequired().joinToString().ifBlank { "未知" },
+            )
         }
-        backendStatusText.text = "${getString(base)}\n$capsLine"
+        val serviceStatus = RootRelayService.readStatus(this)
+        val serviceLine = if (serviceStatus.updatedAt > 0L && serviceStatus.phase != RootRelayService.Phase.STOPPED) {
+            buildString {
+                append("\nRoot 服务：${serviceStatus.phase.name} · ${serviceStatus.message}")
+                append("\n规则 generation ${serviceStatus.ruleGeneration} · 候选 ${serviceStatus.candidateCount} · fail-open ${serviceStatus.failOpenMode}")
+                append("\n真实 IP 接管：IPv4 ${if (serviceStatus.realIpRedirect) "已启用" else "未启用"} · IPv6 ${if (serviceStatus.ipv6RealIpRedirect) "已启用" else "未启用"}")
+                append("\n本机 TLS 终止：${if (serviceStatus.tlsTerminationActive) "ACTIVE" else "未激活"} · 路由 ${serviceStatus.tlsTerminationRoutes} · CA ${serviceStatus.caState}")
+                if (serviceStatus.nat64FallbackActive) {
+                    append("\nNON_STRICT_NAT64：ACTIVE · 路由 ${serviceStatus.nat64FallbackRoutes}")
+                    append(" · ${serviceStatus.nat64Operator} · 预期 ${serviceStatus.nat64ExpectedAsn}/${serviceStatus.nat64ExpectedRegion}")
+                    if (serviceStatus.nat64Verified) {
+                        append(
+                            "\nNAT64 实测：${serviceStatus.nat64ObservedIp} · " +
+                                "${serviceStatus.nat64ObservedAsn} · " +
+                                "${serviceStatus.nat64ObservedOperator} · " +
+                                serviceStatus.nat64ObservedRegion,
+                        )
+                    }
+                } else if (serviceStatus.nat64Operator.isNotBlank() &&
+                    serviceStatus.nat64ProbeDetail.isNotBlank()
+                ) {
+                    append("\nNON_STRICT_NAT64：未激活 · ${serviceStatus.nat64ProbeDetail}")
+                }
+                if (serviceStatus.failureStage.isNotBlank()) append(" · 失败阶段 ${serviceStatus.failureStage}")
+                if (serviceStatus.degradationReason.isNotBlank()) {
+                    append("\n降级：${serviceStatus.degradationReason}")
+                }
+            }
+        } else {
+            ""
+        }
+        val configuredPackages = DirectEngine.settings()?.scopedPackages().orEmpty()
+        val embeddedPackages = DirectEngine.settings()?.embeddedTlsCapturePackages().orEmpty()
+        val uidScope = bm.rootScopeUids().sorted()
+        val uidText = if (uidScope.isEmpty()) "无" else uidScope.joinToString()
+        val rootScopeLine = when (DirectEngine.settings()?.appScopeMode()) {
+            AppScopeMode.ALL_APPS -> "\nRoot 作用域：全部应用（模块自身除外）"
+            AppScopeMode.EXCLUDED_APPS -> "\nRoot 排除 UID：$uidText"
+            else -> "\nRoot 作用域 UID：${if (uidScope.isEmpty()) "尚未解析" else uidText} · 配置包 ${configuredPackages.size} 个"
+        }
+        val embeddedScopeLine = if (embeddedPackages.isEmpty()) {
+            ""
+        } else {
+            val activeUids = serviceStatus.embeddedCaptureUids.ifEmpty {
+                bm.embeddedCaptureUids().sorted()
+            }
+            val activeText = if (activeUids.isEmpty()) "尚未解析" else activeUids.joinToString()
+            "\n内置运行时全 TLS：配置包 ${embeddedPackages.size} 个 · 活动 UID $activeText"
+        }
+        backendStatusText.text = "${getString(base)}\n$capsLine$serviceLine$rootScopeLine$embeddedScopeLine"
         refreshPrivateDnsWarning()
+    }
+
+    private fun requestRootRuleRefreshIfActive() {
+        if (DirectEngine.settings()?.isRootServiceEnabled() != true) return
+        try {
+            RootRelayService.requestRefresh(this)
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun requestRootReprobeIfActive() {
+        if (DirectEngine.settings()?.isRootServiceEnabled() != true) return
+        try {
+            RootRelayService.requestReprobe(this)
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun setTlsTerminationSwitch(checked: Boolean) {
+        tlsTerminationUiUpdate = true
+        try {
+            tlsTerminationSwitch.isChecked = checked
+        } finally {
+            tlsTerminationUiUpdate = false
+        }
+    }
+
+    private fun setNat64FallbackSwitch(checked: Boolean) {
+        nat64UiUpdate = true
+        try {
+            nat64FallbackSwitch.isChecked = checked
+        } finally {
+            nat64UiUpdate = false
+        }
+    }
+
+    private fun disableNat64Fallback() {
+        val store = DirectEngine.settings() ?: return
+        val current = store.nat64FallbackConfig()
+        if (current.enabled || current.riskAccepted) {
+            store.setNat64FallbackConfig(current.copy(enabled = false, riskAccepted = false))
+        }
+        setNat64FallbackSwitch(false)
+        refreshNat64Status()
+    }
+
+    private fun refreshNat64Status() {
+        if (!::nat64StatusText.isInitialized) return
+        val config = DirectEngine.settings()?.nat64FallbackConfig() ?: Nat64FallbackConfig.DISABLED
+        val prepared = config.copy(enabled = true, riskAccepted = true).activationOrNull()
+        val serviceStatus = RootRelayService.readStatus(this)
+        val observationMatches = prepared != null &&
+            serviceStatus.nat64Operator == prepared.operator &&
+            serviceStatus.nat64ExpectedAsn == prepared.expectedAsn &&
+            serviceStatus.nat64ExpectedRegion == prepared.expectedRegion
+        nat64StatusText.text = when {
+            config.enabled && observationMatches && serviceStatus.nat64FallbackActive &&
+                serviceStatus.nat64Verified -> getString(
+                R.string.nat64_status_active,
+                serviceStatus.nat64ObservedIp,
+                serviceStatus.nat64ObservedAsn,
+                serviceStatus.nat64ObservedOperator,
+                serviceStatus.nat64ObservedRegion,
+            )
+            config.enabled && observationMatches && serviceStatus.nat64ObservedAt > 0L &&
+                !serviceStatus.nat64Verified -> getString(
+                R.string.nat64_status_probe_failed,
+                serviceStatus.nat64ProbeDetail.ifBlank { "无实测结果" },
+            )
+            config.enabled && prepared != null -> getString(
+                R.string.nat64_status_selected,
+                prepared.operator,
+                prepared.expectedAsn,
+                prepared.expectedRegion,
+            )
+            prepared != null -> getString(
+                R.string.nat64_status_configured,
+                prepared.operator,
+                prepared.expectedAsn,
+                prepared.expectedRegion,
+            )
+            else -> getString(R.string.nat64_status_off)
+        }
+        setNat64FallbackSwitch(config.enabled && config.activationOrNull() != null)
+    }
+
+    private fun showNat64ConfigDialog(enableAfterSave: Boolean) {
+        val store = DirectEngine.settings() ?: return
+        val current = store.nat64FallbackConfig()
+        val padding = (20 * resources.displayMetrics.density).toInt()
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(padding, 0, padding, 0)
+        }
+        fun field(hint: Int, value: String): EditText = EditText(this).also { edit ->
+            edit.hint = getString(hint)
+            edit.setText(value)
+            edit.setSingleLine(true)
+            edit.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            container.addView(edit)
+        }
+        val prefix = field(R.string.nat64_prefix_hint, current.prefix)
+        val operator = field(R.string.nat64_operator_hint, current.operator)
+        val asn = field(R.string.nat64_asn_hint, current.expectedAsn)
+        val region = field(R.string.nat64_region_hint, current.expectedRegion)
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(getString(R.string.nat64_config_title))
+            .setView(container)
+            .setPositiveButton(getString(R.string.dialog_ok), null)
+            .setNegativeButton(getString(R.string.dialog_cancel), null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val candidate = Nat64FallbackConfig(
+                    enabled = true,
+                    prefix = prefix.text.toString(),
+                    operator = operator.text.toString(),
+                    expectedAsn = asn.text.toString(),
+                    expectedRegion = region.text.toString(),
+                    riskAccepted = true,
+                ).normalized()
+                if (candidate.activationOrNull() == null) {
+                    prefix.error = getString(R.string.nat64_invalid_config)
+                    dnsResultText.text = getString(R.string.nat64_invalid_config)
+                    return@setOnClickListener
+                }
+                store.setNat64FallbackConfig(candidate.copy(enabled = false, riskAccepted = false))
+                refreshNat64Status()
+                requestRootReprobeIfActive()
+                dialog.dismiss()
+                if (enableAfterSave) confirmNat64Activation(candidate)
+            }
+        }
+        dialog.show()
+    }
+
+    private fun confirmNat64Activation(raw: Nat64FallbackConfig) {
+        val candidate = raw.copy(enabled = true, riskAccepted = true).normalized()
+        val activation = candidate.activationOrNull() ?: run {
+            dnsResultText.text = getString(R.string.nat64_invalid_config)
+            refreshNat64Status()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.nat64_risk_title))
+            .setMessage(
+                getString(
+                    R.string.nat64_risk_message,
+                    activation.prefix,
+                    activation.operator,
+                    activation.expectedAsn,
+                    activation.expectedRegion,
+                ),
+            )
+            .setPositiveButton(getString(R.string.dialog_ok)) { _, _ ->
+                DirectEngine.settings()?.setNat64FallbackConfig(candidate)
+                setNat64FallbackSwitch(true)
+                refreshNat64Status()
+                requestRootReprobeIfActive()
+            }
+            .setNegativeButton(getString(R.string.dialog_cancel)) { _, _ ->
+                setNat64FallbackSwitch(false)
+                refreshNat64Status()
+            }
+            .setOnCancelListener {
+                setNat64FallbackSwitch(false)
+                refreshNat64Status()
+            }
+            .show()
+    }
+
+    private fun confirmInstallCa() {
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.ca_install_title))
+            .setMessage(getString(R.string.ca_install_message))
+            .setPositiveButton(getString(R.string.dialog_ok)) { _, _ -> installCaAsync() }
+            .setNegativeButton(getString(R.string.dialog_cancel), null)
+            .show()
+    }
+
+    private fun confirmRemoveCa() {
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.ca_remove_title))
+            .setMessage(getString(R.string.ca_remove_message))
+            .setPositiveButton(getString(R.string.dialog_ok)) { _, _ -> removeCaAsync() }
+            .setNegativeButton(getString(R.string.dialog_cancel), null)
+            .show()
+    }
+
+    private fun installCaAsync() {
+        if (!caOperationInFlight.compareAndSet(false, true)) return
+        setCaControlsBusy(true)
+        backendExecutor.execute {
+            val runtime = SniGateRuntime(applicationContext)
+            val generated = runtime.ensureCaGenerated()
+            val operation = generated.getOrNull()?.let { ca ->
+                AndroidSystemCaInstaller(applicationContext).install(ca)
+            }
+            val message = operation?.detail ?: (
+                "CA 生成失败：" +
+                    (generated.exceptionOrNull()?.message ?: "未知错误").take(300)
+                )
+            lastSystemCaStatus = operation?.status ?: SystemCaStatus(
+                SystemCaState.ERROR,
+                detail = message,
+            )
+            caOperationInFlight.set(false)
+            runOnUiThread {
+                if (isFinishing) return@runOnUiThread
+                setCaControlsBusy(false)
+                caStatusText.text = formatCaStatus(lastSystemCaStatus)
+                dnsResultText.text = message
+                refreshBackendStatus()
+            }
+        }
+    }
+
+    private fun removeCaAsync() {
+        if (!caOperationInFlight.compareAndSet(false, true)) return
+        DirectEngine.settings()?.setTlsTerminationEnabled(false)
+        setTlsTerminationSwitch(false)
+        disableNat64Fallback()
+        setCaControlsBusy(true)
+        backendExecutor.execute {
+            val runtime = SniGateRuntime(applicationContext)
+            runtime.stop()
+            val ca = runCatching {
+                DeviceCertificateAuthority.load(runtime.certificateFile())
+            }.getOrNull()
+            val operation = AndroidSystemCaInstaller(applicationContext).remove(ca)
+            lastSystemCaStatus = operation.status
+            caOperationInFlight.set(false)
+            runOnUiThread {
+                if (isFinishing) return@runOnUiThread
+                setCaControlsBusy(false)
+                caStatusText.text = formatCaStatus(lastSystemCaStatus)
+                dnsResultText.text = operation.detail
+                requestRootRuleRefreshIfActive()
+                refreshBackendStatus()
+            }
+        }
+    }
+
+    private fun refreshCaStatusAsync() {
+        if (caOperationInFlight.get() || !caStatusInFlight.compareAndSet(false, true)) return
+        backendExecutor.execute {
+            val runtime = SniGateRuntime(applicationContext)
+            val ca = runCatching {
+                DeviceCertificateAuthority.load(runtime.certificateFile())
+            }.getOrNull()
+            val status = try {
+                AndroidSystemCaInstaller(applicationContext).status(ca)
+            } catch (t: Throwable) {
+                SystemCaStatus(SystemCaState.ERROR, detail = t.message.orEmpty().take(300))
+            }
+            lastSystemCaStatus = status
+            caStatusInFlight.set(false)
+            runOnUiThread {
+                if (isFinishing) return@runOnUiThread
+                caStatusText.text = formatCaStatus(status)
+                btnRemoveCa.isEnabled = status.state != SystemCaState.NOT_GENERATED
+                if (status.state != SystemCaState.TRUSTED) {
+                    DirectEngine.settings()?.setTlsTerminationEnabled(false)
+                    setTlsTerminationSwitch(false)
+                    disableNat64Fallback()
+                    requestRootRuleRefreshIfActive()
+                }
+            }
+        }
+    }
+
+    private fun setCaControlsBusy(busy: Boolean) {
+        btnInstallCa.isEnabled = !busy
+        btnRemoveCa.isEnabled = !busy
+        tlsTerminationSwitch.isEnabled = !busy
+        if (busy) caStatusText.text = getString(R.string.ca_operation_running)
+    }
+
+    private fun formatCaStatus(status: SystemCaStatus): String {
+        val label = when (status.state) {
+            SystemCaState.NOT_GENERATED -> "未生成"
+            SystemCaState.GENERATED -> "已生成，未安装"
+            SystemCaState.TRUSTED -> "浏览器用户信任已生效"
+            SystemCaState.SYSTEM_ONLY -> "仅系统信任（浏览器不兼容）"
+            SystemCaState.SYSTEM_USER_CONFLICT -> "系统/用户证书冲突，需重启"
+            SystemCaState.BROWSER_POLICY_REQUIRED -> "Edge CA 策略未生效"
+            SystemCaState.BROWSER_POLICY_UNSUPPORTED -> "Edge 版本不支持 CA 策略"
+            SystemCaState.STAGED_REBOOT_REQUIRED -> "已暂存，等待重启"
+            SystemCaState.REMOVE_PENDING -> "等待重启卸载"
+            SystemCaState.FOREIGN_MODULE -> "模块 ID 冲突"
+            SystemCaState.ERROR -> "错误"
+        }
+        val fingerprint = status.fingerprintSha256
+            .takeIf { it.isNotBlank() }
+            ?.let { " · SHA-256 ${it.take(16)}…" }
+            .orEmpty()
+        val detail = status.detail.takeIf { it.isNotBlank() }?.let { "\n$it" }.orEmpty()
+        return "每设备 CA：$label$fingerprint$detail"
+    }
+
+    private fun probeRootAsync() {
+        val bm = backendManager ?: return
+        if (rootProbeInFlight.get()) return
+        rootProbeInFlight.set(true)
+        refreshBackendStatus()
+        backendExecutor.execute {
+            try {
+                bm.rootCapabilities()
+            } catch (t: Throwable) {
+                // 探测失败保留缓存空/旧值，UI 显示不可用
+            } finally {
+                rootProbeInFlight.set(false)
+                runOnUiThread {
+                    if (!isFinishing) refreshBackendStatus()
+                }
+            }
+        }
     }
 
     /** §35：Root 模式生效且系统 Private DNS 非关闭 → 提示可能经 DoT 绕过直连规则。 */
     private fun refreshPrivateDnsWarning() {
         val bm = backendManager ?: return
-        val rootActive = bm.currentMode() == BackendMode.ROOT_TRANSPARENT && bm.isBackendActive()
+        val rootActive = bm.isRootBackendActive()
         val privateDnsNotOff = PrivateDnsState.detect(this) != PrivateDnsMode.OFF
         privateDnsWarning.visibility =
             if (rootActive && privateDnsNotOff) View.VISIBLE else View.GONE
     }
 
-    /** 安装应用多选对话框（原生 ListView+CheckBox，轻量）。 */
+    /** 安装应用多选对话框。 */
     private fun showAppPicker() {
         val pm = packageManager
+        val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://example.com")).apply {
+            addCategory(Intent.CATEGORY_BROWSABLE)
+        }
+        // 能匹配 example.com 可能只是注册了特定深链，并不代表通用浏览器。只有匹配的
+        // http(s) IntentFilter 没有 authority 限制时，才把该包标为通用网页处理器。
+        val genericWebPackages = try {
+            val flags = android.content.pm.PackageManager.MATCH_ALL or
+                android.content.pm.PackageManager.GET_RESOLVED_FILTER
+            pm.queryIntentActivities(browserIntent, flags)
+                .asSequence()
+                .filter { resolved ->
+                    resolved.filter?.let { filter ->
+                        (filter.hasDataScheme("http") || filter.hasDataScheme("https")) &&
+                            filter.authoritiesIterator() == null
+                    } == true
+                }
+                .mapTo(LinkedHashSet()) { it.activityInfo.packageName }
+        } catch (_: Throwable) {
+            emptySet()
+        }
         val apps = try {
-            pm.getInstalledApplications(0).sortedBy { it.loadLabel(pm).toString() }
+            pm.getInstalledApplications(0)
+                .asSequence()
+                .filter { it.packageName != packageName }
+                .sortedWith(
+                    compareBy<android.content.pm.ApplicationInfo> {
+                        when {
+                            it.packageName in PLATFORM_CLIENT_PACKAGES -> 0
+                            it.packageName in genericWebPackages -> 1
+                            else -> 2
+                        }
+                    }
+                        .thenBy { it.loadLabel(pm).toString().lowercase() }
+                        .thenBy { it.packageName },
+                )
+                .toList()
         } catch (t: Throwable) {
             emptyList()
         }
@@ -244,32 +799,93 @@ class MainActivity : Activity(), App.ServiceStateListener {
             dnsResultText.text = getString(R.string.app_picker_empty)
             return
         }
-        val labels = apps.map { it.loadLabel(pm).toString() }
+        val labels = apps.map { app ->
+            val kind = when {
+                app.packageName in PLATFORM_CLIENT_PACKAGES -> "[平台客户端] "
+                app.packageName in genericWebPackages -> "[通用网页] "
+                else -> "[其他应用] "
+            }
+            "$kind${app.loadLabel(pm)} · ${app.packageName}"
+        }
         val packages = apps.map { it.packageName }
         val selected = DirectEngine.settings()?.scopedPackages() ?: emptySet()
 
-        val listView = ListView(this)
-        listView.choiceMode = ListView.CHOICE_MODE_MULTIPLE
-        listView.adapter = ArrayAdapter(
-            this, android.R.layout.simple_list_item_multiple_choice, labels
-        )
-        for (i in packages.indices) {
-            if (packages[i] in selected) listView.setItemChecked(i, true)
-        }
+        val checked = BooleanArray(packages.size) { packages[it] in selected }
 
         AlertDialog.Builder(this)
-            .setTitle(getString(R.string.app_picker_title))
-            .setView(listView)
+            // AlertController 原生多选列表会为按钮预留空间；自定义 ListView 在部分横屏 ROM
+            // 上会按全部条目测量，把“确定/取消”挤出窗口。
+            .setTitle(
+                "${getString(R.string.app_picker_title)}\n${getString(R.string.app_picker_hint)}",
+            )
+            .setMultiChoiceItems(labels.toTypedArray(), checked) { _, which, isChecked ->
+                if (which in checked.indices) checked[which] = isChecked
+            }
             .setPositiveButton(getString(R.string.dialog_ok)) { _, _ ->
                 val result = LinkedHashSet<String>()
-                val positions = listView.checkedItemPositions
-                for (i in 0 until positions.size()) {
-                    val pos = positions.keyAt(i)
-                    if (positions.valueAt(i) && pos in packages.indices) {
-                        result.add(packages[pos])
-                    }
+                for (i in checked.indices) {
+                    if (checked[i]) result.add(packages[i])
                 }
-                DirectEngine.settings()?.setScopedPackages(result)
+                DirectEngine.settings()?.let { settings ->
+                    settings.setScopedPackages(result)
+                    // 全 TLS 是 scope 的严格子集；取消宿主作用域时同步撤销其扩大接管授权。
+                    settings.setEmbeddedTlsCapturePackages(
+                        settings.embeddedTlsCapturePackages().intersect(result),
+                    )
+                }
+                requestRootRuleRefreshIfActive()
+            }
+            .setNegativeButton(getString(R.string.dialog_cancel), null)
+            .show()
+    }
+
+    /**
+     * Android 没有原生 Electron；这里的 Electron-like 指 WebView/Cronet/GeckoView/CEF 等宿主。
+     * 二次选择只允许当前 SELECTED scope 的子集，避免在 ALL/EXCLUDED 模式扩大 HTTPS 接管面。
+     */
+    private fun showEmbeddedTlsPicker() {
+        val settings = DirectEngine.settings() ?: return
+        val scoped = settings.scopedPackages()
+        if (settings.appScopeMode() != AppScopeMode.SELECTED_APPS || scoped.isEmpty()) {
+            dnsResultText.text = getString(R.string.embedded_tls_picker_empty)
+            return
+        }
+        val pm = packageManager
+        val apps = scoped.mapNotNull { pkg ->
+            try {
+                pm.getApplicationInfo(pkg, 0)
+            } catch (_: Throwable) {
+                null
+            }
+        }.sortedWith(
+            compareBy<android.content.pm.ApplicationInfo> {
+                it.loadLabel(pm).toString().lowercase()
+            }.thenBy { it.packageName },
+        )
+        if (apps.isEmpty()) {
+            dnsResultText.text = getString(R.string.embedded_tls_picker_empty)
+            return
+        }
+        val labels = apps.map { "${it.loadLabel(pm)} · ${it.packageName}" }
+        val packages = apps.map { it.packageName }
+        val selected = settings.embeddedTlsCapturePackages().intersect(scoped)
+        val checked = BooleanArray(packages.size) { packages[it] in selected }
+        AlertDialog.Builder(this)
+            .setTitle(
+                "${getString(R.string.embedded_tls_picker_title)}\n" +
+                    getString(R.string.embedded_tls_picker_hint),
+            )
+            .setMultiChoiceItems(labels.toTypedArray(), checked) { _, which, isChecked ->
+                if (which in checked.indices) checked[which] = isChecked
+            }
+            .setPositiveButton(getString(R.string.dialog_ok)) { _, _ ->
+                val result = LinkedHashSet<String>()
+                for (i in checked.indices) {
+                    if (checked[i]) result += packages[i]
+                }
+                settings.setEmbeddedTlsCapturePackages(result.intersect(scoped))
+                requestRootRuleRefreshIfActive()
+                refreshBackendStatus()
             }
             .setNegativeButton(getString(R.string.dialog_cancel), null)
             .show()
@@ -288,6 +904,7 @@ class MainActivity : Activity(), App.ServiceStateListener {
     override fun onDestroy() {
         // 完整诊断若在运行：中断在飞阶段 + 丢弃未开始任务（诊断线程随后自行收尾）
         fullRunner?.cancel()
+        backendExecutor.shutdownNow()
         super.onDestroy()
         (application as App).removeServiceStateListener(this)
     }
@@ -300,8 +917,9 @@ class MainActivity : Activity(), App.ServiceStateListener {
             sb.append(getString(R.string.framework_fmt, service.frameworkName,
                 service.frameworkVersion, "" + service.frameworkVersionCode))
             sb.append("\n").append(getString(R.string.framework_api, "" + service.apiVersion))
-            sb.append("\n").append(getString(R.string.framework_scope, service.scope.joinToString(", ")))
-            frameworkText.text = sb.toString()
+            sb.append("\nLSPosed 作用域：").append(service.scope.joinToString(", "))
+            frameworkSummary = sb.toString()
+            refreshHookHeartbeat()
         }
     }
 
@@ -309,7 +927,45 @@ class MainActivity : Activity(), App.ServiceStateListener {
         runOnUiThread {
             statusText.text = getString(R.string.status_disconnected)
             statusIndicator.setBackgroundResource(R.drawable.shape_circle_red)
+            refreshHookHeartbeat()
         }
+    }
+
+    override fun onRemoteSettingsStateChanged(ready: Boolean, message: String) {
+        runOnUiThread {
+            if (!isFinishing) refreshHookHeartbeat()
+        }
+    }
+
+    override fun onHookHeartbeatChanged() {
+        runOnUiThread {
+            if (!isFinishing) refreshHookHeartbeat()
+        }
+    }
+
+    private fun refreshHookHeartbeat() {
+        val app = application as App
+        val heartbeat = DirectEngine.settings()?.hookHeartbeats()?.firstOrNull()
+        val hitTime = heartbeat?.timestamp?.takeIf { it > 0L }?.let { timestamp ->
+            java.text.DateFormat.getDateTimeInstance(
+                java.text.DateFormat.SHORT,
+                java.text.DateFormat.MEDIUM,
+            ).format(java.util.Date(timestamp))
+        }.orEmpty()
+        val line = when {
+            heartbeat == null -> "Hook 状态：尚未收到目标进程运行证明"
+            System.currentTimeMillis() - heartbeat.timestamp > HOOK_HEARTBEAT_STALE_MS ->
+                "Hook 心跳：已过期 · 最近 ${heartbeat.packageName} · $hitTime"
+            else -> "Hook 心跳：${heartbeat.packageName} · ${heartbeat.processName} · $hitTime · generation ${heartbeat.routeGeneration} · ${heartbeat.framework} API ${heartbeat.apiVersion} · DNS 命中 ${heartbeat.hitCount}"
+        }
+        val remoteLine = if (app.remoteSettingsReady) {
+            "远程配置：已同步"
+        } else {
+            "远程配置：${app.remoteSettingsMessage}"
+        }
+        frameworkText.text = listOf(frameworkSummary, remoteLine, line)
+            .filter { it.isNotBlank() }
+            .joinToString("\n")
     }
 
     // ==================== 统计行 ====================
@@ -715,7 +1371,8 @@ class MainActivity : Activity(), App.ServiceStateListener {
         return when (bm.currentMode()) {
             BackendMode.ROOT_TRANSPARENT -> "Root Transparent ACTIVE"
             BackendMode.VPN -> "VPN ACTIVE"
-            BackendMode.XPOSED_ONLY -> "Xposed assist"
+            BackendMode.XPOSED_ONLY ->
+                if (bm.isRootBackendActive()) "Xposed + Root Transparent ACTIVE" else "Xposed DNS"
             else -> "ACTIVE"
         }
     }
@@ -780,40 +1437,71 @@ class MainActivity : Activity(), App.ServiceStateListener {
     /**
      * 统一后端启动入口（§15/§17）：按当前设置的 backend mode 走对应流程。
      * AUTO 解析出 ROOT → 弹确认（Root 不占 VPN slot）；确认走 root，取消走 VPN。
+     * su / iptables 探测禁止跑在主线程（KernelSU 弹授权或命令超时会 ANR）。
      */
     private fun startProxy() {
         val bm = backendManager ?: return
         when (DirectEngine.settings()?.backendMode() ?: BackendMode.AUTO) {
             BackendMode.AUTO -> {
-                val resolved = bm.resolveAuto()
-                if (resolved == BackendMode.ROOT_TRANSPARENT) {
-                    AlertDialog.Builder(this)
-                        .setTitle(getString(R.string.root_dialog_title))
-                        .setMessage(getString(R.string.root_dialog_message))
-                        .setPositiveButton(getString(R.string.root_dialog_use_root)) { _, _ ->
-                            if (!bm.start(BackendMode.ROOT_TRANSPARENT)) {
-                                dnsResultText.text = getString(R.string.proxy_start_failed, "Root 后端启动失败")
-                            }
-                            refreshBackendStatus()
-                        }
-                        .setNegativeButton(getString(R.string.root_dialog_use_vpn)) { _, _ ->
+                vpnBtn.isEnabled = false
+                backendExecutor.execute {
+                    val resolved = try {
+                        bm.resolveAuto()
+                    } catch (t: Throwable) {
+                        BackendMode.VPN
+                    }
+                    runOnUiThread {
+                        if (isFinishing) return@runOnUiThread
+                        vpnBtn.isEnabled = true
+                        refreshBackendStatus()
+                        if (resolved == BackendMode.ROOT_TRANSPARENT) {
+                            AlertDialog.Builder(this)
+                                .setTitle(getString(R.string.root_dialog_title))
+                                .setMessage(getString(R.string.root_dialog_message))
+                                .setPositiveButton(getString(R.string.root_dialog_use_root)) { _, _ ->
+                                    startBackendAsync(BackendMode.ROOT_TRANSPARENT)
+                                }
+                                .setNegativeButton(getString(R.string.root_dialog_use_vpn)) { _, _ ->
+                                    startVpnFlow()
+                                }
+                                .show()
+                        } else {
                             startVpnFlow()
                         }
-                        .show()
-                } else {
-                    startVpnFlow()
+                    }
                 }
             }
-            BackendMode.ROOT_TRANSPARENT -> {
-                if (!bm.start(BackendMode.ROOT_TRANSPARENT)) {
-                    dnsResultText.text = getString(R.string.proxy_start_failed, "Root 后端启动失败")
-                }
-                refreshBackendStatus()
-            }
+            BackendMode.ROOT_TRANSPARENT -> startBackendAsync(BackendMode.ROOT_TRANSPARENT)
             BackendMode.VPN -> startVpnFlow()
-            BackendMode.XPOSED_ONLY -> {
-                bm.start(BackendMode.XPOSED_ONLY)
-                refreshBackendStatus()
+            BackendMode.XPOSED_ONLY -> startBackendAsync(BackendMode.XPOSED_ONLY)
+        }
+    }
+
+    private fun startBackendAsync(mode: BackendMode) {
+        val bm = backendManager ?: return
+        vpnBtn.isEnabled = false
+        val beforeGeneration = try {
+            RootRelayService.requestStart(this, mode)
+        } catch (t: Throwable) {
+            vpnBtn.isEnabled = true
+            dnsResultText.text = getString(R.string.proxy_start_failed, t.message ?: "无法启动前台服务")
+            return
+        }
+        backendExecutor.execute {
+            val serviceStatus = RootRelayService.awaitTerminal(this, beforeGeneration)
+            val ok = serviceStatus.phase == RootRelayService.Phase.ACTIVE
+            runOnUiThread {
+                if (isFinishing) return@runOnUiThread
+                vpnBtn.isEnabled = true
+                if (!ok) {
+                    val caps = bm.cachedRootCapabilities()
+                    val detail = serviceStatus.message.ifBlank {
+                        caps?.missingRequired()?.takeIf { it.isNotEmpty() }?.joinToString()
+                            ?: "Root 后端启动失败"
+                    }
+                    dnsResultText.text = getString(R.string.proxy_start_failed, detail)
+                }
+                updateVpnUi()
             }
         }
     }
@@ -829,7 +1517,15 @@ class MainActivity : Activity(), App.ServiceStateListener {
     }
 
     private fun stopProxy() {
-        backendManager?.stop()
+        if (backendManager?.currentMode() == BackendMode.VPN || DnsVpnService.isActive()) {
+            backendManager?.stop()
+        } else {
+            try {
+                RootRelayService.requestStop(this)
+            } catch (t: Throwable) {
+                backendManager?.stop()
+            }
+        }
         vpnBtn.postDelayed({ updateVpnUi() }, 500)
     }
 

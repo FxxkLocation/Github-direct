@@ -2,6 +2,7 @@ package org.xiyu.githubdirect.core.net
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -67,29 +68,32 @@ class ClientHelloAccumulatorTest {
         return record
     }
 
-    /** 从分片结果中提取两个 record 的 payload 并拼接。 */
-    private fun payloads(frag: ByteArray): Pair<ByteArray, ByteArray> {
-        val firstLen = ((frag[3].toInt() and 0xFF) shl 8) or (frag[4].toInt() and 0xFF)
-        val secondStart = 5 + firstLen
-        val secondLen = ((frag[secondStart + 3].toInt() and 0xFF) shl 8) or
-                (frag[secondStart + 4].toInt() and 0xFF)
-        return Pair(
-            frag.copyOfRange(5, 5 + firstLen),
-            frag.copyOfRange(secondStart + 5, secondStart + 5 + secondLen),
-        )
+    /** 提取开头连续 Handshake records 的 payload。 */
+    private fun payloads(frag: ByteArray): List<ByteArray> {
+        val result = ArrayList<ByteArray>()
+        var pos = 0
+        while (pos + 5 <= frag.size && frag[pos] == 0x16.toByte()) {
+            val length = ((frag[pos + 3].toInt() and 0xFF) shl 8) or
+                (frag[pos + 4].toInt() and 0xFF)
+            val end = pos + 5 + length
+            if (length <= 0 || end > frag.size) break
+            result += frag.copyOfRange(pos + 5, end)
+            pos = end
+        }
+        return result
     }
 
-    private fun joined(pair: Pair<ByteArray, ByteArray>): ByteArray = pair.first + pair.second
+    private fun joined(parts: List<ByteArray>): ByteArray = parts.fold(ByteArray(0), ByteArray::plus)
 
     @Test
-    fun `完整单段ClientHello分片输出且两record拼接还原`() {
+    fun `完整单段ClientHello分片输出且多record拼接还原`() {
         val hello = buildClientHello("github.com")
         val acc = ClientHelloAccumulator()
         val out = acc.feed(hello, 1000)
         assertNotNull(out)
         assertTrue("输出应为分片字节", acc.consumeFragmented())
         assertTrue(acc.isPassthrough())
-        assertTrue("分片两段拼接 == 原始 payload", joined(payloads(out!!)).contentEquals(hello.copyOfRange(5, hello.size)))
+        assertTrue("分片拼接 == 原始 payload", joined(payloads(out!!)).contentEquals(hello.copyOfRange(5, hello.size)))
     }
 
     @Test
@@ -102,8 +106,7 @@ class ClientHelloAccumulatorTest {
         val out = acc.feed(hello.copyOfRange(mid, hello.size), 1100)
         assertNotNull(out)
         assertTrue(acc.consumeFragmented())
-        val (p1, p2) = payloads(out!!)
-        assertEquals(hello.size - 5, p1.size + p2.size)
+        assertEquals(hello.size - 5, joined(payloads(out!!)).size)
     }
 
     @Test
@@ -116,8 +119,7 @@ class ClientHelloAccumulatorTest {
         val out = acc.feed(hello.copyOfRange(a + b, hello.size), 1200)
         assertNotNull(out)
         assertTrue(acc.consumeFragmented())
-        val (p1, p2) = payloads(out!!)
-        assertEquals(hello.size - 5, p1.size + p2.size)
+        assertEquals(hello.size - 5, joined(payloads(out!!)).size)
     }
 
     @Test
@@ -128,8 +130,7 @@ class ClientHelloAccumulatorTest {
         val out = acc.feed(hello.copyOfRange(5, hello.size), 1100)
         assertNotNull(out)
         assertTrue(acc.consumeFragmented())
-        val (p1, p2) = payloads(out!!)
-        assertEquals(hello.size - 5, p1.size + p2.size)
+        assertEquals(hello.size - 5, joined(payloads(out!!)).size)
     }
 
     @Test
@@ -171,15 +172,15 @@ class ClientHelloAccumulatorTest {
     }
 
     @Test
-    fun `无SNI时走fragmentTlsRecord兜底拆分路径`() {
+    fun `无SNI时按固定上限均匀拆分`() {
         val hello = buildClientHello("github.com", withSni = false)
         val acc = ClientHelloAccumulator()
         val out = acc.feed(hello, 1000)
         assertNotNull(out)
         assertTrue(acc.consumeFragmented())
-        val recordLen = ((hello[3].toInt() and 0xFF) shl 8) or (hello[4].toInt() and 0xFF)
-        val (p1, _) = payloads(out!!)
-        assertEquals("兜底：handshake 数据中间（≤50 处）切割", minOf(recordLen / 2, 50), p1.size)
+        val parts = payloads(out!!)
+        assertEquals(9, parts.size)
+        assertTrue(joined(parts).contentEquals(hello.copyOfRange(5, hello.size)))
     }
 
     @Test
@@ -199,11 +200,47 @@ class ClientHelloAccumulatorTest {
         // record len=1（不足 10 字节，fragmentTlsRecord 返回 null）
         val data = byteArrayOf(0x16, 0x03, 0x01, 0x00, 0x01, 0x01)
         val acc = ClientHelloAccumulator()
-        val out = acc.feed(data, 1000)
+        assertNull(acc.feed(data, 1000))
+        val out = acc.feed(byteArrayOf(0), 2501)
         assertNotNull(out)
-        assertTrue(out!!.contentEquals(data))
+        assertTrue(out!!.copyOfRange(0, data.size).contentEquals(data))
+        assertEquals(data.size + 1, out.size)
         assertTrue(acc.isPassthrough())
         assertFalse(acc.consumeFragmented())
+    }
+
+    @Test
+    fun `跨两个TLS record的ClientHello可提取SNI并分片`() {
+        val hello = buildClientHello("github.com")
+        val payload = hello.copyOfRange(5, hello.size)
+        val split = 24
+        fun record(part: ByteArray): ByteArray = byteArrayOf(
+            0x16, 0x03, 0x03,
+            ((part.size shr 8) and 0xff).toByte(),
+            (part.size and 0xff).toByte(),
+        ) + part
+        val multi = record(payload.copyOfRange(0, split)) + record(payload.copyOfRange(split, payload.size))
+        val inspected = TlsClientHelloRecords.inspect(multi)
+        assertTrue(inspected is TlsClientHelloRecords.Inspection.Complete)
+        assertEquals("github.com", (inspected as TlsClientHelloRecords.Inspection.Complete).serverName)
+        val fragmented = requireNotNull(TlsClientHelloRecords.fragment(multi))
+        assertTrue(fragmented.firstRecordEnd in 6 until fragmented.bytes.size)
+    }
+
+    @Test
+    fun `固定熵生成可复现布局且TCP边界覆盖完整字节流`() {
+        val hello = buildClientHello("gateway.discord.gg")
+        val first = requireNotNull(TlsClientHelloRecords.fragment(hello, entropy = 7L))
+        val repeated = requireNotNull(TlsClientHelloRecords.fragment(hello, entropy = 7L))
+        assertArrayEquals(first.bytes, repeated.bytes)
+
+        val tcpPlan = TlsClientHelloRecords.tcpWritePlan(first.bytes, entropy = 11L)
+        val repeatedPlan = TlsClientHelloRecords.tcpWritePlan(first.bytes, entropy = 11L)
+        assertArrayEquals(tcpPlan.writeEnds, repeatedPlan.writeEnds)
+        assertTrue("SNI records 应进一步拆成 TCP writes", tcpPlan.writeEnds.size > first.writeEnds.size)
+        assertEquals(first.bytes.size, tcpPlan.writeEnds.last())
+        assertTrue(tcpPlan.writeEnds.asSequence().zipWithNext().all { (left, right) -> left < right })
+        assertTrue(tcpPlan.urgentAfterWriteIndex in 0 until tcpPlan.writeEnds.lastIndex)
     }
 
     @Test
@@ -215,8 +252,7 @@ class ClientHelloAccumulatorTest {
         val out = acc.feed(both, 1000)
         assertNotNull(out)
         assertTrue(acc.consumeFragmented())
-        // out = 分片后的首 record（+5 字节头） + 原样 extra
-        assertEquals(hello.size + 5 + extra.size, out!!.size)
+        assertTrue(joined(payloads(out!!)).contentEquals(hello.copyOfRange(5, hello.size)))
         val tail = out.copyOfRange(out.size - extra.size, out.size)
         assertTrue(tail.contentEquals(extra))
     }

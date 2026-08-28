@@ -1,8 +1,8 @@
 package org.xiyu.githubdirect.xposed
 
 import org.xiyu.githubdirect.core.dns.EndpointCache
-import org.xiyu.githubdirect.core.dns.EndpointResolver
 import org.xiyu.githubdirect.core.dns.IpAddresses
+import org.xiyu.githubdirect.core.dns.ResolutionDecision
 import org.xiyu.githubdirect.core.net.RelayIpTable
 import org.xiyu.githubdirect.core.rules.DnsNames
 import org.xiyu.githubdirect.core.rules.ResolverPolicy
@@ -14,49 +14,77 @@ import org.xiyu.githubdirect.core.rules.TransportPolicy
  *
  * 纯 JVM，不依赖 Xposed API（ModuleMain 负责 hook 桥接），可单测。
  *
- * 语义：
- * - normalize 失败 / 未命中启用规则 / PASSTHROUGH → null（不拦截，chain.proceed()）
- * - NXDOMAIN 屏蔽域 → emptyList（调用方返回空数组，令解析失败/屏蔽）
- * - 其余命中 → 统一 CLEAN_DNS 语义：真实 IP + CIDR 过滤，走 EndpointCache
- *   （PROVIDER_FIRST/PROVIDER_ONLY 先查 hosts 表；全失败 → null 放行，Xposed 下解析照常）
+ * Hook 热路径只读 RelayIpTable / EndpointCache 的不可变快照，绝不执行 DoH、TCP 探测或等待 Future。
+ * 缓存尚未就绪时保护性放行，由 Root DNS/透明中继或系统解析继续处理。
  */
 class XposedDnsInterceptor(
     private val registry: RuleRegistry,
-    private val resolver: EndpointResolver,
     private val cache: EndpointCache,
     private val relayTable: RelayIpTable,
 ) {
 
-    /** 返回 IP 字符串列表；null = 不拦截；emptyList = NX 屏蔽。 */
-    fun resolve(host: String?): List<String>? {
-        val domain = host?.let { DnsNames.normalize(it) } ?: return null
-        val match = registry.match(domain) ?: return null
+    fun decide(host: String?): ResolutionDecision {
+        val domain = host?.let { DnsNames.normalize(it) } ?: return ResolutionDecision.Passthrough
+        val match = registry.match(domain) ?: return ResolutionDecision.Passthrough
         val policy = match.policy
 
         when (policy.transport) {
-            TransportPolicy.NXDOMAIN -> return emptyList()
-            TransportPolicy.PASSTHROUGH -> return null
-            else -> { /* 其余统一 CLEAN_DNS 语义 */ }
+            TransportPolicy.NXDOMAIN -> return ResolutionDecision.Nxdomain
+            TransportPolicy.PASSTHROUGH -> return ResolutionDecision.Passthrough
+            else -> Unit
         }
 
-        // providers 链（Xposed 进程未启动 hosts 同步，表为空时自然落到 DoH）
-        if (policy.resolver == ResolverPolicy.PROVIDER_FIRST
-            || policy.resolver == ResolverPolicy.PROVIDER_ONLY
-        ) {
-            val tableIps = relayTable.lookup(domain)
-            if (!tableIps.isNullOrEmpty()) {
-                val v4 = tableIps.mapNotNull { IpAddresses.parseIpv4(it) }
-                if (v4.isNotEmpty()) {
-                    return v4.map { IpAddresses.ipv4ToString(it) }
-                }
+        policy.fixedIp?.let { fixed ->
+            val raw = IpAddresses.parseIpAddress(fixed)
+            if (raw != null && (!policy.aaaaSuppress || raw.size == 4)) {
+                return ResolutionDecision.Addresses(listOf(fixed))
             }
         }
 
-        val resolved = cache.resolve(domain) { d -> resolver.resolve(d, policy.cidr) }
-            ?: return null
+        // 模块服务进程发布的是已经过 TLS SNI/系统信任链验证的不可变快照；即使旧 profile
+        // 仍标为 DOH，也优先使用该安全缓存，使 Chromium/WebView 的 Java DNS Hook 不需要联网。
+        val tableIps = relayTable.lookup(domain)
+        if (!tableIps.isNullOrEmpty()) {
+            val valid = tableIps.filter { address ->
+                val raw = IpAddresses.parseIpAddress(address)
+                raw != null && (!policy.aaaaSuppress || raw.size == 4)
+            }
+            if (valid.isNotEmpty()) {
+                return ResolutionDecision.Addresses(valid)
+            }
+        }
+        if (policy.resolver == ResolverPolicy.PROVIDER_ONLY) return ResolutionDecision.Passthrough
+
+        // 只读缓存，不触发 fetch；该类型没有持有任何 resolver，结构上禁止热路径发起网络。
+        val resolved = cache.get(domain) ?: return ResolutionDecision.Passthrough
         val v4 = resolved.v4.map { IpAddresses.ipv4ToString(it) }
-        val v6 = resolved.v6.map { IpAddresses.ipv6ToString(it) }
-        if (v4.isEmpty() && v6.isEmpty()) return null
-        return v4 + v6
+        val v6 = if (policy.aaaaSuppress) emptyList() else {
+            resolved.v6.map { IpAddresses.ipv6ToString(it) }
+        }
+        val addresses = v4 + v6
+        return if (addresses.isEmpty()) {
+            ResolutionDecision.Passthrough
+        } else {
+            ResolutionDecision.Addresses(addresses)
+        }
+    }
+
+    /**
+     * Typed DnsResolver 的 AAAA 语义辅助：匹配规则明确要求 aaaaSuppress 时返回 NODATA。
+     * 只查不可变规则索引，不解析网络；NXDOMAIN 仍由 [decide] 优先处理。
+     */
+    fun shouldSuppressAaaa(host: String?): Boolean {
+        val domain = host?.let { DnsNames.normalize(it) } ?: return false
+        val policy = registry.match(domain)?.policy ?: return false
+        return policy.aaaaSuppress
+            && policy.transport != TransportPolicy.NXDOMAIN
+            && policy.transport != TransportPolicy.PASSTHROUGH
+    }
+
+    /** 旧调用兼容层；新 Hook 应使用 [decide]。 */
+    fun resolve(host: String?): List<String>? = when (val decision = decide(host)) {
+        ResolutionDecision.Passthrough -> null
+        ResolutionDecision.Nxdomain -> emptyList()
+        is ResolutionDecision.Addresses -> decision.addresses
     }
 }

@@ -6,10 +6,38 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <queries>
+        <package android:name="com.github.android" />
+        <package android:name="com.android.chrome" />
+        <package android:name="com.brave.browser" />
+        <package android:name="org.mozilla.firefox" />
+        <package android:name="com.microsoft.emmx" />
+        <package android:name="com.heytap.browser" />
+        <package android:name="com.quark.browser" />
+        <!-- Electron-like / WebView / Cronet 宿主：显式查询保证未注册通用浏览器 intent 时仍可选择。 -->
+        <package android:name="com.google.android.googlequicksearchbox" />
+        <package android:name="com.google.android.youtube" />
+        <package android:name="com.google.android.apps.youtube.music" />
+        <package android:name="com.discord" />
+        <package android:name="com.discord.canary" />
+        <package android:name="com.openai.chatgpt" />
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="https" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
 
     <application
         android:name=".App"
-        android:description="@android:string/unknownName"
+        android:description="@string/xposed_description"
         android:label="@string/app_name"
         android:theme="@style/AppTheme"
         tools:ignore="MissingApplicationIcon">
@@ -26,6 +54,18 @@
             android:name=".ServiceManagerActivity"
             android:exported="false" />
 
+        <!--
+          Modern LSPosed exposes Remote Preferences as read-only inside hooked apps. This
+          write-only endpoint accepts only token-authenticated heartbeat Bundles whose package
+          belongs to Binder.getCallingUid(); it exposes no query/insert/update/delete surface.
+        -->
+        <provider
+            android:name=".data.HookHeartbeatProvider"
+            android:authorities="org.xiyu.githubdirect.hookstatus"
+            android:exported="true"
+            android:grantUriPermissions="false"
+            tools:ignore="ExportedContentProvider" />
+
         <service
             android:name=".vpn.DnsVpnService"
             android:permission="android.permission.BIND_VPN_SERVICE"
@@ -38,5 +78,23 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="dns_proxy" />
         </service>
+
+        <service
+            android:name=".root.RootRelayService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="multi_platform_dns_and_tls_relay" />
+        </service>
+
+        <receiver
+            android:name=".root.RootBootReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

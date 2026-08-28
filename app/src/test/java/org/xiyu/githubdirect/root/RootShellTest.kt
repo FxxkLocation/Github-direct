@@ -51,11 +51,12 @@ class RootShellTest {
     }
 
     @Test
-    fun `sanitize 拒绝与符号 管道竖线放行`() {
+    fun `sanitize 拒绝与符号 管道与引号`() {
         assertRejected("cmd & cmd2")
         assertRejected("cmd && cmd2")
-        // 竖线在白名单内（管道拼接本身可预期）
-        RootShell.sanitize("iptables -t nat -S | head")
+        assertRejected("iptables -t nat -S | head")
+        assertRejected("echo 'quoted'")
+        assertRejected("echo \"quoted\"")
     }
 
     @Test
@@ -108,6 +109,20 @@ class RootShellTest {
     }
 
     @Test
+    fun `execStrict 使用 set-e 防止后序成功掩盖前序失败`() {
+        val fake = FakeExecutor()
+        val shell = RootShell(suPath = "su", executor = fake)
+
+        shell.execStrict("ipset create GHD_DST hash:net -exist", "ipset flush GHD_DST", timeoutSec = 9)
+
+        assertEquals(
+            "set -e\nipset create GHD_DST hash:net -exist\nipset flush GHD_DST",
+            fake.calls.single().second,
+        )
+        assertEquals(9, fake.lastTimeout)
+    }
+
+    @Test
     fun `exec 超时结果透传`() {
         val fake = FakeExecutor(result = RootShell.Result(-1, "", "timeout", timedOut = true))
         val shell = RootShell(executor = fake)
@@ -141,8 +156,31 @@ class RootShellTest {
 
         assertTrue(r.ok)
         assertEquals(1, fake.calls.size)
-        assertEquals(script, fake.calls[0].second)
+        assertEquals("$script\n", fake.calls[0].second)
         assertEquals(15, fake.lastTimeout)
+    }
+
+    @Test
+    fun `execIpv6RestoreScript使用独立restore入口并透传stdin脚本`() {
+        val calls = mutableListOf<String>()
+        val fake = object : ShellExecutor {
+            override fun exec(suPath: String, script: String, timeoutSec: Int): RootShell.Result =
+                RootShell.Result(1, "", "不应走普通exec", false)
+
+            override fun execIpv6Restore(
+                suPath: String,
+                restoreScript: String,
+                timeoutSec: Int,
+            ): RootShell.Result {
+                calls += "$suPath|$timeoutSec|$restoreScript"
+                return RootShell.Result(0, "", "", false)
+            }
+        }
+        val shell = RootShell(suPath = "su", executor = fake)
+        val script = "*nat\n:GHD_6_TCP - [0:0]\nCOMMIT"
+
+        assertTrue(shell.execIpv6RestoreScript(script, timeoutSec = 17).ok)
+        assertEquals(listOf("su|17|$script\n"), calls)
     }
 
     @Test
