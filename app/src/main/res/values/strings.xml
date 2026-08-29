@@ -59,10 +59,10 @@
     <string name="nat64_configure">配置 NAT64 前缀与出口元数据</string>
     <string name="nat64_config_title">配置第三方 NAT64</string>
     <string name="nat64_prefix_hint">全球可路由 IPv6 /96 前缀</string>
-    <string name="nat64_operator_hint">运营方名称</string>
+    <string name="nat64_operator_hint">预期 BGP 运营主体关键词（需匹配 RIPE holder）</string>
     <string name="nat64_asn_hint">预期出口 ASN（如 AS12345）</string>
     <string name="nat64_region_hint">预期出口地区（含两位代码，如 US/ABQ）</string>
-    <string name="nat64_invalid_config">配置无效：必须填写全球可路由且低 32 位为 0 的 /96、运营方、有效 ASN 和地区。</string>
+    <string name="nat64_invalid_config">配置无效：必须填写全球可路由且低 32 位为 0 的 /96、可匹配 RIPE holder 的运营主体关键词、有效 ASN 和地区。</string>
     <string name="nat64_requires_tls">NAT64 兜底依赖已受信任的专用 CA 与本机 TLS/ECH 终止。</string>
     <string name="nat64_requires_openai">请先启用 OpenAI/ChatGPT 服务规则；其他平台不会继承该 NAT64 配置。</string>
     <string name="nat64_risk_title">确认非严格 NAT64 路径</string>
@@ -73,7 +73,7 @@
     <string name="ca_enable_title">启用本机 TLS 终止</string>
     <string name="ca_enable_message">该功能只在原候选/分片失败后，对已启用平台尝试严格 ECH 或已验证的无 SNI 上游。TLS 会在本机解密并重新加密；用户 CA 是设备级信任锚，证书固定、自定义信任库或禁用平台 CA 集成的应用仍可能拒绝。私钥仅在本设备 noBackup 目录生成，不会写入 APK。继续启用？</string>
     <string name="ca_install_title">安装浏览器用户 CA</string>
-    <string name="ca_install_message">将生成一套本设备独有的 CA，并通过 Root 调用 Android 证书存储实现静默安装。只安装公有 DER 证书；私钥保持在应用私有目录且权限为 0600。若设备上仍有旧版 github_direct_ca 系统/APEX 副本，将排队移除并要求重启，避免 Edge/Chromium 的重复根冲突。继续？</string>
+    <string name="ca_install_message">将生成一套本设备独有的 CA，并通过 Root 调用 Android 证书存储实现静默安装。只安装公有 DER 证书；私钥保持在应用私有目录且权限为 0600。对已选择的 Edge 147+，还会安装关闭浏览器 DoH、保留内置明文 DNS 的受管策略，使 DNS 包保留浏览器 UID 并进入本模块的有界 Root 数据面；卸载本 CA 时会移除由本模块创建的策略。若设备上仍有旧版 github_direct_ca 系统/APEX 副本，将排队移除并要求重启，避免 Edge/Chromium 的重复根冲突。继续？</string>
     <string name="ca_remove_title">卸载每设备 CA</string>
     <string name="ca_remove_message">将立即关闭 TLS 终止，按 DER 精确删除本模块安装的用户 CA，并把旧 github_direct_ca 模块标记为禁用/卸载；不会删除其他用户证书。若系统/APEX 副本仍在当前启动周期，重启后完成清除。继续？</string>
     <string name="ca_not_trusted">请先安装每设备浏览器用户 CA，并确认 AndroidCAStore 验证通过。</string>

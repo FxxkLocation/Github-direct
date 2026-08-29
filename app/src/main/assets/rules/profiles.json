@@ -267,7 +267,7 @@
                                                "youtube.com",
                                                "googlevideo.com"
                                            ],
-                         "notes":  "依据 Google 官方 Chrome/Workspace 主机名建议维护，并为网页、Innertube API、图片及 googlevideo 流媒体加入精确入口；保留 IPv6。google-edge 池只共享已验证 IP 种子，所有精确域及动态后缀连接仍按真实 SNI、系统信任链和主机名独立验证，不继承其他域的验证结论。Android YouTube/Cronet 实际播放、分片续传与双栈切换仍待实机，故 NEEDS_VERIFY。",
+                         "notes":  "依据 Google 官方 Chrome/Workspace 主机名建议维护，并为网页、Innertube API、图片及 googlevideo 流媒体加入精确入口；保留 IPv6。google-edge 池只在显式 candidatePoolScope 内共享已验证 IP 种子，跨端点组时只允许带 HTTP 语义探测的锚点输出种子。所有精确域及动态后缀连接仍按真实 SNI、系统信任链和主机名独立验证，不继承其他域的验证结论。Android YouTube/Cronet 实际播放、分片续传与双栈切换仍待实机，故 NEEDS_VERIFY。",
                          "providers":  [
 
                                        ],
@@ -278,7 +278,9 @@
                                              "transport":  "TLS_FRAGMENT_RELAY",
                                              "resolver":  "PROVIDER_FIRST",
                                              "endpointGroup":  "youtube-web",
-                                             "candidatePool":  "google-edge"
+                                             "candidatePool":  "google-edge",
+                                             "candidatePoolScope":  "youtube-web",
+                                             "semanticProbe":  { "path":  "/", "statusMin":  200, "statusMax":  399 }
                                          },
                                          {
                                              "id":  "youtubei-googleapis-com",
@@ -286,7 +288,8 @@
                                              "transport":  "TLS_FRAGMENT_RELAY",
                                              "resolver":  "PROVIDER_FIRST",
                                              "endpointGroup":  "youtube-api",
-                                             "candidatePool":  "google-edge"
+                                             "candidatePool":  "google-edge",
+                                             "candidatePoolScope":  "youtube-api"
                                          },
                                          {
                                              "id":  "i-ytimg-com",
@@ -294,7 +297,8 @@
                                              "transport":  "TLS_FRAGMENT_RELAY",
                                              "resolver":  "PROVIDER_FIRST",
                                              "endpointGroup":  "youtube-images",
-                                             "candidatePool":  "google-edge"
+                                             "candidatePool":  "google-edge",
+                                             "candidatePoolScope":  "youtube-images"
                                          },
                                          {
                                              "id":  "redirector-googlevideo-com",
@@ -303,7 +307,8 @@
                                              "resolver":  "PROVIDER_FIRST",
                                              "aaaaSuppress":  false,
                                              "endpointGroup":  "youtube-stream",
-                                             "candidatePool":  "google-edge"
+                                             "candidatePool":  "google-edge",
+                                             "candidatePoolScope":  "youtube-stream"
                                          },
                                          {
                                              "id":  "youtube-com",
@@ -316,7 +321,8 @@
                                              "aaaaSuppress":  null,
                                              "fragmentTls":  null,
                                              "fixedIp":  null,
-                                             "candidatePool":  "google-edge"
+                                             "candidatePool":  "google-edge",
+                                             "candidatePoolScope":  "youtube-web"
                                          },
                                          {
                                              "id":  "youtu-be",
@@ -329,7 +335,8 @@
                                              "aaaaSuppress":  null,
                                              "fragmentTls":  null,
                                              "fixedIp":  null,
-                                             "candidatePool":  "google-edge"
+                                             "candidatePool":  "google-edge",
+                                             "candidatePoolScope":  "youtube-web"
                                          },
                                          {
                                              "id":  "ytimg-com",
@@ -342,7 +349,8 @@
                                              "aaaaSuppress":  null,
                                              "fragmentTls":  null,
                                              "fixedIp":  null,
-                                             "candidatePool":  "google-edge"
+                                             "candidatePool":  "google-edge",
+                                             "candidatePoolScope":  "youtube-images"
                                          },
                                          {
                                              "id":  "ggpht-com",
@@ -355,7 +363,8 @@
                                              "aaaaSuppress":  null,
                                              "fragmentTls":  null,
                                              "fixedIp":  null,
-                                             "candidatePool":  "google-edge"
+                                             "candidatePool":  "google-edge",
+                                             "candidatePoolScope":  "youtube-images"
                                          },
                                          {
                                              "id":  "youtube-nocookie-com",
@@ -368,7 +377,8 @@
                                              "aaaaSuppress":  null,
                                              "fragmentTls":  null,
                                              "fixedIp":  null,
-                                             "candidatePool":  "google-edge"
+                                             "candidatePool":  "google-edge",
+                                             "candidatePoolScope":  "youtube-web"
                                          },
                                          {
                                              "id":  "googlevideo-com",
@@ -381,7 +391,8 @@
                                              "aaaaSuppress":  false,
                                              "fragmentTls":  null,
                                              "fixedIp":  null,
-                                             "candidatePool":  "google-edge"
+                                             "candidatePool":  "google-edge",
+                                             "candidatePoolScope":  "youtube-stream"
                                          }
                                      ]
                      },
@@ -399,7 +410,7 @@
                                                "google.com",
                                                "gstatic.com"
                                            ],
-                         "notes":  "依据 Google 官方 Chrome/Workspace 主机名清单维护，含账户、API、静态资源、1e100 与 gvt 下载域；保留 IPv6。Google 公布的地址集合持续变化且与 Google Cloud 范围重叠，本阶段不把宽 CIDR 整体接入防火墙。google-edge 池只跨规则共享已验证 IP 种子，每个目标域必须以真实 SNI、系统信任链和主机名重新验证后才能发布。不会使用 g.cn 伪 SNI。当前设备尚未完成 Google App/Play 全链路，故 NEEDS_VERIFY。",
+                         "notes":  "依据 Google 官方 Chrome/Workspace 主机名清单维护，含账户、API、静态资源、reCAPTCHA、1e100 与 gvt 下载域；保留 IPv6。Google 公布的地址集合持续变化且与 Google Cloud 范围重叠，本阶段不把宽 CIDR 整体接入防火墙。google-edge 池只在显式 candidatePoolScope 内共享已验证 IP 种子，每个目标域必须以真实 SNI、系统信任链和主机名重新验证后才能发布。不会使用 g.cn 伪 SNI。当前设备尚未完成 Google App/Play 全链路，故 NEEDS_VERIFY。",
                          "providers":  [
 
                                        ],
@@ -410,7 +421,9 @@
                                              "transport":  "TLS_FRAGMENT_RELAY",
                                              "resolver":  "PROVIDER_FIRST",
                                              "endpointGroup":  "google-web",
-                                             "candidatePool":  "google-edge"
+                                             "candidatePool":  "google-edge",
+                                             "candidatePoolScope":  "google-core",
+                                             "semanticProbe":  { "path":  "/", "statusMin":  200, "statusMax":  399 }
                                          },
                                          {
                                              "id":  "accounts-google-com",
@@ -418,7 +431,9 @@
                                              "transport":  "TLS_FRAGMENT_RELAY",
                                              "resolver":  "PROVIDER_FIRST",
                                              "endpointGroup":  "google-auth",
-                                             "candidatePool":  "google-edge"
+                                             "candidatePool":  "google-edge",
+                                             "candidatePoolScope":  "google-core",
+                                             "semanticProbe":  { "path":  "/", "statusMin":  200, "statusMax":  399 }
                                          },
                                          {
                                              "id":  "play-googleapis-com",
@@ -426,7 +441,8 @@
                                              "transport":  "TLS_FRAGMENT_RELAY",
                                              "resolver":  "PROVIDER_FIRST",
                                              "endpointGroup":  "google-play",
-                                             "candidatePool":  "google-edge"
+                                             "candidatePool":  "google-edge",
+                                             "candidatePoolScope":  "google-core"
                                          },
                                          {
                                              "id":  "www-gstatic-com",
@@ -434,7 +450,9 @@
                                              "transport":  "CLEAN_DNS",
                                              "resolver":  "PROVIDER_FIRST",
                                              "endpointGroup":  "google-static",
-                                             "candidatePool":  "google-edge"
+                                             "candidatePool":  "google-edge",
+                                             "candidatePoolScope":  "google-core",
+                                             "semanticProbe":  { "path":  "/generate_204", "statusMin":  204, "statusMax":  204 }
                                          },
                                          {
                                              "id":  "google-com",
@@ -447,7 +465,8 @@
                                              "aaaaSuppress":  null,
                                              "fragmentTls":  null,
                                              "fixedIp":  null,
-                                             "candidatePool":  "google-edge"
+                                             "candidatePool":  "google-edge",
+                                             "candidatePoolScope":  "google-core"
                                          },
                                          {
                                              "id":  "googleapis-com",
@@ -460,7 +479,8 @@
                                              "aaaaSuppress":  null,
                                              "fragmentTls":  null,
                                              "fixedIp":  null,
-                                             "candidatePool":  "google-edge"
+                                             "candidatePool":  "google-edge",
+                                             "candidatePoolScope":  "google-core"
                                          },
                                          {
                                              "id":  "googleusercontent-com",
@@ -473,7 +493,8 @@
                                              "aaaaSuppress":  null,
                                              "fragmentTls":  null,
                                              "fixedIp":  null,
-                                             "candidatePool":  "google-edge"
+                                             "candidatePool":  "google-edge",
+                                             "candidatePoolScope":  "google-core"
                                          },
                                          {
                                              "id":  "googledrive-com",
@@ -486,7 +507,8 @@
                                              "aaaaSuppress":  null,
                                              "fragmentTls":  null,
                                              "fixedIp":  null,
-                                             "candidatePool":  "google-edge"
+                                             "candidatePool":  "google-edge",
+                                             "candidatePoolScope":  "google-apps"
                                          },
                                          {
                                              "id":  "googlesyndication-com",
@@ -499,7 +521,8 @@
                                              "aaaaSuppress":  null,
                                              "fragmentTls":  null,
                                              "fixedIp":  null,
-                                             "candidatePool":  "google-edge"
+                                             "candidatePool":  "google-edge",
+                                             "candidatePoolScope":  "google-ads"
                                          },
                                          {
                                              "id":  "googleweblight-com",
@@ -512,7 +535,8 @@
                                              "aaaaSuppress":  null,
                                              "fragmentTls":  null,
                                              "fixedIp":  null,
-                                             "candidatePool":  "google-edge"
+                                             "candidatePool":  "google-edge",
+                                             "candidatePoolScope":  "google-web-light"
                                          },
                                          {
                                              "id":  "gstatic-com",
@@ -525,7 +549,8 @@
                                              "aaaaSuppress":  null,
                                              "fragmentTls":  null,
                                              "fixedIp":  null,
-                                             "candidatePool":  "google-edge"
+                                             "candidatePool":  "google-edge",
+                                             "candidatePoolScope":  "google-core"
                                          },
                                          {
                                              "id":  "gmail-com",
@@ -538,7 +563,8 @@
                                              "aaaaSuppress":  null,
                                              "fragmentTls":  null,
                                              "fixedIp":  null,
-                                             "candidatePool":  "google-edge"
+                                             "candidatePool":  "google-edge",
+                                             "candidatePoolScope":  "google-apps"
                                          },
                                          {
                                              "id":  "android-com",
@@ -551,7 +577,24 @@
                                              "aaaaSuppress":  null,
                                              "fragmentTls":  null,
                                              "fixedIp":  null,
-                                             "candidatePool":  "google-edge"
+                                             "candidatePool":  "google-edge",
+                                             "candidatePoolScope":  "google-core"
+                                         },
+                                         {
+                                             "id":  "ggpht-google-com",
+                                             "match":  { "type":  "SUFFIX", "value":  ".ggpht.com" },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "candidatePool":  "google-edge",
+                                             "candidatePoolScope":  "google-core"
+                                         },
+                                         {
+                                             "id":  "recaptcha-net",
+                                             "match":  { "type":  "SUFFIX", "value":  ".recaptcha.net" },
+                                             "transport":  "TLS_FRAGMENT_RELAY",
+                                             "resolver":  "DOH",
+                                             "candidatePool":  "google-edge",
+                                             "candidatePoolScope":  "google-core"
                                          },
                                          {
                                              "id":  "one-e100-net",

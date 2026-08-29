@@ -18,14 +18,16 @@ class RuleCatalogCandidatePoolTest {
                     "match": {"type": "EXACT", "value": "safe.example"},
                     "transport": "CLEAN_DNS",
                     "candidatePool": "edge.pool-1",
-                    "echConfigDomain": "cloudflare-ech.com"
+                    "echConfigDomain": "cloudflare-ech.com",
+                    "semanticProbe": {"path":"/health?source=ghd","statusMin":204,"statusMax":204}
                   },
                   {
                     "id": "unsafe",
                     "match": {"type": "EXACT", "value": "unsafe.example"},
                     "transport": "CLEAN_DNS",
                     "candidatePool": "../../unbounded pool",
-                    "echConfigDomain": "../../invalid"
+                    "echConfigDomain": "../../invalid",
+                    "semanticProbe": {"path":"//attacker.example/","statusMin":200,"statusMax":399}
                   }
                 ]
               }]
@@ -35,7 +37,10 @@ class RuleCatalogCandidatePoolTest {
         val rules = catalog.getValue("test").domains.associateBy { it.id }
         assertEquals("edge.pool-1", rules.getValue("safe").candidatePool)
         assertEquals("cloudflare-ech.com", rules.getValue("safe").echConfigDomain)
+        assertEquals("/health?source=ghd", rules.getValue("safe").semanticProbe?.path)
+        assertEquals(204, rules.getValue("safe").semanticProbe?.statusMin)
         assertNull(rules.getValue("unsafe").candidatePool)
         assertNull(rules.getValue("unsafe").echConfigDomain)
+        assertNull(rules.getValue("unsafe").semanticProbe)
     }
 }

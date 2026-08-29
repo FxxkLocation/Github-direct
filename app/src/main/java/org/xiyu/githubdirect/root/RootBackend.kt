@@ -1,5 +1,7 @@
 package org.xiyu.githubdirect.root
 
+import org.xiyu.githubdirect.core.dns.IpAddresses
+
 /**
  * 后端生命周期状态机（fail-open 事务化，设计 §19-§22）。
  *
@@ -43,6 +45,9 @@ class RootBackend(
     val activeGeneration: Long get() = activeRules?.generation ?: 0L
     val realIpRedirectActive: Boolean get() = activeRules?.usesRealIpRedirect() == true
     val ipv6RealIpRedirectActive: Boolean get() = activeRules?.usesIpv6RealIpRedirect() == true
+    val nat64Ipv6FallbackActive: Boolean get() = activeRules?.usesNat64Ipv6Fallback() == true
+    val nat64Ipv6FallbackDestinationCount: Int
+        get() = activeRules?.nat64Ipv6FallbackDestinationCount() ?: 0
     val fullTlsCaptureUidCount: Int get() = activeRules?.fullTlsCaptureUidCount() ?: 0
     val ipSetLeaseActive: Boolean get() = activeRules?.usesIpSet() == true
     val failOpenGuardianActive: Boolean get() = guardian != null
@@ -312,6 +317,7 @@ class RootBackend(
             if (!resultV6.ok) return fail("firewall.restore.v6", resultV6.diagnosticSummary())
             if (!refreshGuardian("guardian.heartbeat.post-restore-v6")) return false
         }
+        if (!installNat64Ipv6Fallback(rules)) return false
         return verifyRules(rules)
     }
 
@@ -337,7 +343,39 @@ class RootBackend(
             if (!resultV6.ok) return fail("firewall.restore.v6", resultV6.diagnosticSummary())
             if (!refreshGuardian("guardian.heartbeat.post-refresh-restore-v6")) return false
         }
+        if (!replaceNat64Ipv6Fallback(previous, next)) return false
         return verifyRules(next)
+    }
+
+    private fun installNat64Ipv6Fallback(rules: FirewallRules): Boolean {
+        val commands = rules.buildNat64Ipv6FallbackInstallCommands()
+        if (commands.isEmpty()) return true
+        if (!refreshGuardian("guardian.heartbeat.pre-policy-v6")) return false
+        val result = try {
+            shell.execStrict(*commands.toTypedArray(), timeoutSec = GUARDIAN_SAFE_COMMAND_TIMEOUT_SECONDS)
+        } catch (t: Throwable) {
+            return fail("policy.v6.install", throwableDetail(t))
+        }
+        if (!result.ok) return fail("policy.v6.install", result.diagnosticSummary())
+        return refreshGuardian("guardian.heartbeat.post-policy-v6")
+    }
+
+    /** 刷新允许短暂 fail-open：先摘旧 UID rule，再安装新表；失败时 rollback 清理全部自有规则。 */
+    private fun replaceNat64Ipv6Fallback(
+        previous: FirewallRules,
+        next: FirewallRules,
+    ): Boolean {
+        if (!refreshGuardian("guardian.heartbeat.pre-policy-v6-refresh")) return false
+        try {
+            shell.exec(
+                *previous.buildNat64Ipv6FallbackCleanupCommands().toTypedArray(),
+                timeoutSec = GUARDIAN_SAFE_COMMAND_TIMEOUT_SECONDS,
+            )
+        } catch (_: Throwable) {
+            // 下一步 strict add 会暴露仍残留的重复 rule/route，并进入统一 rollback。
+        }
+        if (!refreshGuardian("guardian.heartbeat.mid-policy-v6-refresh")) return false
+        return installNat64Ipv6Fallback(next)
     }
 
     /** 新规则已验证后删除无引用的旧子链/集合；命令失败不影响已提交数据面。 */
@@ -442,6 +480,9 @@ class RootBackend(
         }
         // 4) chain 已无引用后清理可能由上次 generation 留下的集合。
         cmds += rules.buildIpSetCleanupCommands()
+        // 5) 当前配置即使已经关闭 NAT64，也必须清掉上个进程/旧作用域留下的固定
+        // 优先级 UID rule 与专属路由表；命令只覆盖本模块的有界表号和优先级窗口。
+        cmds += rules.buildNat64Ipv6FallbackCleanupCommands()
 
         try {
             shell.exec(*cmds.toTypedArray(), timeoutSec = 20)
@@ -507,8 +548,18 @@ class RootBackend(
             .replace(Regex(" +-p (?:tcp|udp)(?= |$)"), "")
             .replace(Regex("\\s+"), " ")
             .trim()
+        line = canonicalizeIpv6Tokens(line)
         return if (protocol == null) line else "$line [protocol=$protocol]"
     }
+
+    private fun canonicalizeIpv6Tokens(line: String): String = line
+        .split(' ')
+        .joinToString(" ") { token ->
+            val address = token.substringBefore('/')
+            val suffix = token.removePrefix(address)
+            val raw = IpAddresses.parseIpv6(address) ?: return@joinToString token
+            IpAddresses.ipv6ToString(raw) + suffix
+        }
 
     /** rollback：cleanup 命令 + 停已启动的监听（§21）。 */
     private fun rollback(rules: FirewallRules?, dnsStarted: Boolean, tcpStarted: Boolean) {

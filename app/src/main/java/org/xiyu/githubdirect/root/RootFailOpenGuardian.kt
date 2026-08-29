@@ -230,7 +230,9 @@ internal class RootFailOpenGuardian(
         private val SAFE_OWNER_TOKEN = Regex("^[a-f0-9]{32}$")
         private val SAFE_CLEANUP = Regex(
             "^(?:ip6?tables -t (?:nat|filter) -(?:D OUTPUT -j|F|X) GHD_[A-Za-z0-9_]+|" +
-                "ipset destroy GHD_[A-Za-z0-9_]+)$",
+                "ipset destroy GHD_[A-Za-z0-9_]+|" +
+                "ip -6 rule del priority 105(?:[0-2][0-9]|3[01]) table 52[0-9]{3}|" +
+                "ip -6 route flush table 52[0-9]{3})$",
         )
 
         private fun newOwnerToken(): String = UUID.randomUUID().toString().replace("-", "")

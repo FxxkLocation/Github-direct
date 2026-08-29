@@ -8,6 +8,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.xiyu.githubdirect.core.dns.IpAddresses
 import org.xiyu.githubdirect.core.routing.CandidateSource
+import org.xiyu.githubdirect.core.routing.CandidateFailureStage
 import org.xiyu.githubdirect.core.routing.EndpointCandidate
 import org.xiyu.githubdirect.core.routing.EndpointPlan
 import org.xiyu.githubdirect.core.routing.RouteCapability
@@ -74,6 +75,115 @@ class GithubHostsProviderPolicyTest {
             address = polluted,
             googleRanges = null,
             previouslyVerified = false,
+        ))
+    }
+
+    @Test
+    fun `旧Wire污染样本只被观察器重见时降级来源并禁止上游`() {
+        val merged = GithubHostsProvider.mergeCandidateProvenance(
+            existing = GithubHostsProvider.CandidateProvenance(
+                CandidateSource.WIRE_DOH,
+                upstreamEligible = false,
+                observedThisRound = false,
+            ),
+            previousUsable = false,
+            incoming = GithubHostsProvider.CandidateProvenance(
+                CandidateSource.DNS_OBSERVER,
+                upstreamEligible = false,
+                observedThisRound = true,
+            ),
+        )
+
+        assertEquals(CandidateSource.DNS_OBSERVER, merged.source)
+        assertFalse(merged.upstreamEligible)
+        assertTrue(merged.observedThisRound)
+    }
+
+    @Test
+    fun `尚有效Wire历史不能由观察器刷新可信观测语义`() {
+        val existing = GithubHostsProvider.CandidateProvenance(
+            CandidateSource.WIRE_DOH,
+            upstreamEligible = true,
+            observedThisRound = false,
+        )
+        val merged = GithubHostsProvider.mergeCandidateProvenance(
+            existing = existing,
+            previousUsable = true,
+            incoming = GithubHostsProvider.CandidateProvenance(
+                CandidateSource.DNS_OBSERVER,
+                upstreamEligible = false,
+                observedThisRound = true,
+            ),
+        )
+
+        assertEquals(existing, merged)
+        assertFalse(merged.observedThisRound)
+    }
+
+    @Test
+    fun `本轮官方Wire观测会升级旧观察器来源`() {
+        val merged = GithubHostsProvider.mergeCandidateProvenance(
+            existing = GithubHostsProvider.CandidateProvenance(
+                CandidateSource.DNS_OBSERVER,
+                upstreamEligible = false,
+                observedThisRound = false,
+            ),
+            previousUsable = false,
+            incoming = GithubHostsProvider.CandidateProvenance(
+                CandidateSource.WIRE_DOH,
+                upstreamEligible = true,
+                observedThisRound = true,
+            ),
+        )
+
+        assertEquals(CandidateSource.WIRE_DOH, merged.source)
+        assertTrue(merged.upstreamEligible)
+        assertTrue(merged.observedThisRound)
+    }
+
+    @Test
+    fun `Google归属异常的可信传输答案降级为观察样本`() {
+        assertEquals(
+            CandidateSource.DNS_OBSERVER,
+            GithubHostsProvider.effectiveCandidateSource(
+                "google-edge",
+                CandidateSource.WIRE_DOH,
+                ownershipEligible = false,
+            ),
+        )
+        assertEquals(
+            CandidateSource.WIRE_DOH,
+            GithubHostsProvider.effectiveCandidateSource(
+                "google-edge",
+                CandidateSource.WIRE_DOH,
+                ownershipEligible = true,
+            ),
+        )
+        assertEquals(
+            CandidateSource.WIRE_DOH,
+            GithubHostsProvider.effectiveCandidateSource(
+                candidatePool = null,
+                source = CandidateSource.WIRE_DOH,
+                ownershipEligible = false,
+            ),
+        )
+    }
+
+    @Test
+    fun `Google可信响应没有归属合格答案时不算实时候选来源`() {
+        assertFalse(GithubHostsProvider.trustedResponseCountsAsLiveSource(
+            "google-edge", responseObserved = true, ownershipEligibleAnswerObserved = false,
+        ))
+        assertTrue(GithubHostsProvider.trustedResponseCountsAsLiveSource(
+            "google-edge", responseObserved = true, ownershipEligibleAnswerObserved = true,
+        ))
+        assertTrue(GithubHostsProvider.trustedResponseCountsAsLiveSource(
+            candidatePool = null,
+            responseObserved = true,
+            ownershipEligibleAnswerObserved = false,
+        ))
+        assertFalse(GithubHostsProvider.trustedResponseCountsAsLiveSource(
+            "google-edge", responseObserved = false, ownershipEligibleAnswerObserved = true,
         ))
     }
 
@@ -147,6 +257,35 @@ class GithubHostsProviderPolicyTest {
                 .contains("严格 Wire DoH 不可达"),
         )
         assertEquals("", GithubHostsProvider.sourceDegradation(false, false, true, false))
+    }
+
+    @Test
+    fun `候选失败阶段生成可解释且有序的降级摘要`() {
+        val failures = listOf(
+            EndpointCandidate(
+                "www.google.com", "142.250.0.1", CandidateSource.WIRE_DOH,
+                0, 0, 0, RouteCapability.UNUSABLE,
+                interceptOnly = true,
+                failureStage = CandidateFailureStage.TCP_CONNECT,
+            ),
+            EndpointCandidate(
+                "discord.com", "162.159.1.1", CandidateSource.WIRE_DOH,
+                0, 0, 0, RouteCapability.UNUSABLE,
+                interceptOnly = true,
+                failureStage = CandidateFailureStage.TLS_RESET,
+            ),
+            EndpointCandidate(
+                "www.youtube.com", "142.250.0.2", CandidateSource.WIRE_DOH,
+                0, 0, 0, RouteCapability.UNUSABLE,
+                interceptOnly = true,
+                failureStage = CandidateFailureStage.TCP_CONNECT,
+            ),
+        )
+
+        assertEquals(
+            "候选探测失败：TCP/443 建连超时或拒绝×2、ClientHello 后连接重置（疑似 SNI 过滤）×1",
+            GithubHostsProvider.probeFailureDegradation(failures),
+        )
     }
 
     @Test

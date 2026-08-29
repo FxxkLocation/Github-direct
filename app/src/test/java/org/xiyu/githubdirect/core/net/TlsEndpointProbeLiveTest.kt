@@ -1,9 +1,12 @@
 package org.xiyu.githubdirect.core.net
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.xiyu.githubdirect.core.routing.RouteCapability
+import org.xiyu.githubdirect.core.routing.CandidateFailureStage
+import org.xiyu.githubdirect.core.rules.HttpSemanticProbePolicy
 import java.net.Socket
 
 /**
@@ -14,15 +17,16 @@ import java.net.Socket
  *   .\gradlew.bat testDebugUnitTest --tests '*TlsEndpointProbeLiveTest'
  */
 class TlsEndpointProbeLiveTest {
+    private fun unboundBinder() = object : NetworkBinder {
+        override var protect: ((Socket) -> Boolean)? = null
+        override fun httpGet(url: String, connectTimeoutMs: Int, readTimeoutMs: Int): String? = null
+        override fun bindSocket(socket: Socket) = Unit
+    }
+
     @Test
     fun bundledFallbackCandidatesPassSystemTrustAndHostnameVerification() {
         assumeTrue(System.getenv("GHD_LIVE_TLS_PROBE") == "1")
-        val binder = object : NetworkBinder {
-            override var protect: ((Socket) -> Boolean)? = null
-            override fun httpGet(url: String, connectTimeoutMs: Int, readTimeoutMs: Int): String? = null
-            override fun bindSocket(socket: Socket) = Unit
-        }
-        val probe = TlsEndpointProbe(binder, timeoutMs = 5_000)
+        val probe = TlsEndpointProbe(unboundBinder(), timeoutMs = 5_000)
         val candidates = listOf(
             "alive.github.com" to "140.82.112.26",
             "alive.github.com" to "140.82.113.26",
@@ -44,5 +48,21 @@ class TlsEndpointProbeLiveTest {
             val result = probe.probe(domain, address)
             assertNotEquals("$domain@$address: ${result.error}", RouteCapability.UNUSABLE, result.capability)
         }
+    }
+
+    @Test
+    fun semanticProbeRejectsCertificateCompatibleWrongVirtualHost() {
+        assumeTrue(System.getenv("GHD_LIVE_SEMANTIC_PROBE") == "1")
+        val probe = TlsEndpointProbe(unboundBinder(), timeoutMs = 5_000)
+        val address = "120.253.253.98"
+        val generate204 = requireNotNull(HttpSemanticProbePolicy.create("/generate_204", 204, 204))
+        val webRoot = requireNotNull(HttpSemanticProbePolicy.create("/", 200, 399))
+
+        val staticResult = probe.probe("www.gstatic.com", address, semanticProbe = generate204)
+        assertNotEquals(staticResult.error, RouteCapability.UNUSABLE, staticResult.capability)
+
+        val wrongWebBackend = probe.probe("www.google.com", address, semanticProbe = webRoot)
+        assertEquals(RouteCapability.UNUSABLE, wrongWebBackend.capability)
+        assertEquals(CandidateFailureStage.HTTP_SEMANTIC, wrongWebBackend.failureStage)
     }
 }

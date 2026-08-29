@@ -26,6 +26,17 @@ enum class RouteCapability {
     UNUSABLE,
 }
 
+/** 候选最近一次主动探测失败阶段；用于解释降级，不参与放宽信任判定。 */
+enum class CandidateFailureStage {
+    NONE,
+    INVALID_ADDRESS,
+    TCP_CONNECT,
+    TLS_RESET,
+    CERTIFICATE,
+    TLS_HANDSHAKE,
+    HTTP_SEMANTIC,
+}
+
 data class EndpointCandidate(
     val domain: String,
     val address: String,
@@ -49,6 +60,12 @@ data class EndpointCandidate(
     val noSniProbed: Boolean = noSniCapable,
     /** 最近一次主动/被动 TLS 路由失败的有界诊断；成功探测后清空。 */
     val lastError: String = "",
+    val failureStage: CandidateFailureStage = CandidateFailureStage.NONE,
+    /**
+     * 最后一次主动探测使用的 HTTP 语义策略；只有候选同时 [usable] 时才表示该策略通过。
+     * 失败候选也保留签名以维持同策略退避；旧快照缺省为未按当前策略探测。
+     */
+    val semanticProbeSignature: String = "",
 ) {
     fun usable(now: Long): Boolean =
         !interceptOnly && capability != RouteCapability.UNUSABLE
@@ -116,9 +133,123 @@ data class RouteSnapshot(
         return result
     }
 
+    /**
+     * 只返回指定域名边界内的候选目标，不包含平台 Meta CIDR。
+     *
+     * 该集合用于第三方 NAT64 的按域 IPv6 兜底：浏览器绕过受管 DNS 并命中当前快照
+     * 中的 AAAA 时，Root 数据面可令所选 UID 回退到已接管的 IPv4 路径。调用方仍须按
+     * 地址族和功能开关过滤；
+     * 这里保留未过 TLS 探测但尚未过期的观测地址，因为浏览器仍可能尝试连接它们。
+     */
+    fun candidateDestinationsForDomains(
+        rawDomains: Set<String>,
+        now: Long = System.currentTimeMillis(),
+    ): Set<String> {
+        val roots = rawDomains.asSequence()
+            .mapNotNull(DnsNames::normalize)
+            .toSet()
+        if (roots.isEmpty()) return emptySet()
+
+        val result = LinkedHashSet<String>()
+        for (plan in plans.values) {
+            val authorized = roots.any { root ->
+                plan.domain == root ||
+                    plan.domain.endsWith(".$root") ||
+                    (plan.includeSubdomains && root.endsWith(".${plan.domain}"))
+            }
+            if (!authorized) continue
+            for (candidate in plan.candidates) {
+                if (candidate.expiresAt > 0L && now >= candidate.expiresAt) continue
+                val raw = IpAddresses.parseIpAddress(candidate.address) ?: continue
+                if (IpAddresses.isBogonOrPoisoned(raw)) continue
+                result += candidate.address + if (raw.size == 4) "/32" else "/128"
+            }
+        }
+        return result
+    }
+
+    /**
+     * 只返回实际发布路由边界覆盖的候选目标。
+     *
+     * [exactDomains] 不得扩张到子域；[suffixDomains] 才允许覆盖同一标签边界内的动态
+     * 子域。该区别用于 NAT64 IPv6 UID 回落，避免“任意一条路由已发布”时把尚未通过
+     * ECH/证书预检的平台域一并写入不可达表。
+     */
+    fun candidateDestinationsForDomainBoundaries(
+        exactDomains: Set<String>,
+        suffixDomains: Set<String>,
+        now: Long = System.currentTimeMillis(),
+    ): Set<String> {
+        val exact = exactDomains.asSequence()
+            .mapNotNull(DnsNames::normalize)
+            .toSet()
+        val suffixes = suffixDomains.asSequence()
+            .mapNotNull(DnsNames::normalize)
+            .toSet()
+        if (exact.isEmpty() && suffixes.isEmpty()) return emptySet()
+
+        val result = LinkedHashSet<String>()
+        for (plan in plans.values) {
+            val planDomain = DnsNames.normalize(plan.domain) ?: continue
+            val authorized = planDomain in exact || suffixes.any { root ->
+                planDomain == root || planDomain.endsWith(".$root")
+            }
+            if (!authorized) continue
+            for (candidate in plan.candidates) {
+                if (candidate.expiresAt > 0L && now >= candidate.expiresAt) continue
+                val raw = IpAddresses.parseIpAddress(candidate.address) ?: continue
+                if (IpAddresses.isBogonOrPoisoned(raw)) continue
+                result += candidate.address + if (raw.size == 4) "/32" else "/128"
+            }
+        }
+        return result
+    }
+
+    /**
+     * 返回可用于另一条严格 TLS 路径重新验证的 IPv4 种子。
+     *
+     * 直连阶段的 TCP/SNI 重置不应阻止 NAT64 兜底自行完成证书验证，因此这里允许尚未过期
+     * 的 Wire DoH、内置、安全历史等高信任来源，即使它们在当前直连路径上暂时
+     * `UNUSABLE`。本机 DNS、纯观测与社区地址永远不进入该集合；调用方必须再次执行系统
+     * 信任链和主机名验证，不能把“可信来源”直接当成“可用上游”。
+     */
+    fun trustedIpv4ProbeSeedsFor(
+        rawDomain: String,
+        now: Long = System.currentTimeMillis(),
+        limit: Int = MAX_PROBE_SEEDS,
+    ): List<String> {
+        require(limit in 1..MAX_PROBE_SEEDS)
+        val plan = planFor(rawDomain) ?: return emptyList()
+        return plan.candidates.asSequence()
+            .filter { it.expiresAt <= 0L || now < it.expiresAt }
+            .filter { it.source in TRUSTED_PROBE_SEED_SOURCES }
+            .sortedWith(
+                compareBy<EndpointCandidate> { if (it.usable(now)) 0 else 1 }
+                    .thenBy { sourceRank(it.source) }
+                    .thenBy { if (it.latencyMs > 0L) it.latencyMs else Long.MAX_VALUE }
+                    .thenBy { it.address },
+            )
+            .mapNotNull { candidate ->
+                val raw = IpAddresses.parseIpv4(candidate.address) ?: return@mapNotNull null
+                candidate.address.takeUnless { IpAddresses.isBogonOrPoisoned(raw) }
+            }
+            .distinct()
+            .take(limit)
+            .toList()
+    }
+
     companion object {
         const val MAX_ACTIVE_PER_DOMAIN = 3
+        private const val MAX_PROBE_SEEDS = 4
         val EMPTY = RouteSnapshot(0, 0, 0, emptyMap(), emptySet())
+
+        private val TRUSTED_PROBE_SEED_SOURCES = setOf(
+            CandidateSource.BUNDLED,
+            CandidateSource.GITHUB_META,
+            CandidateSource.WIRE_DOH,
+            CandidateSource.CANDIDATE_POOL,
+            CandidateSource.HISTORICAL,
+        )
 
         private fun capabilityRank(value: RouteCapability): Int = when (value) {
             RouteCapability.DIRECT_TLS -> 0
@@ -141,7 +272,8 @@ data class RouteSnapshot(
 }
 
 object RouteSnapshotCodec {
-    const val VERSION = 1
+    /** v2 为候选加入语义策略签名；拒绝继承 v1 中无法证明语义能力的池历史。 */
+    const val VERSION = 2
     private const val MAX_PLANS = 128
     private const val MAX_CANDIDATES = 32
     private const val MAX_CIDRS = 512
@@ -172,6 +304,12 @@ object RouteSnapshotCodec {
                     .put("noSniProbed", candidate.noSniProbed)
                 sanitizeDiagnostic(candidate.lastError).takeIf(String::isNotEmpty)?.let {
                     encoded.put("lastError", it)
+                }
+                if (candidate.failureStage != CandidateFailureStage.NONE) {
+                    encoded.put("failureStage", candidate.failureStage.name)
+                }
+                candidate.semanticProbeSignature.takeIf(String::isNotEmpty)?.let {
+                    encoded.put("semanticProbeSignature", it.take(MAX_SEMANTIC_SIGNATURE_CHARS))
                 }
                 candidates.put(encoded)
             }
@@ -233,6 +371,11 @@ object RouteSnapshotCodec {
                             capability == RouteCapability.NO_SNI_TLS,
                         ),
                         lastError = sanitizeDiagnostic(c.optString("lastError")),
+                        failureStage = enumValue<CandidateFailureStage>(
+                            c.optString("failureStage"),
+                        ) ?: CandidateFailureStage.NONE,
+                        semanticProbeSignature = c.optString("semanticProbeSignature")
+                            .take(MAX_SEMANTIC_SIGNATURE_CHARS),
                     )
                 }
                 decodedPlans[domain] = EndpointPlan(
@@ -302,4 +445,5 @@ object RouteSnapshotCodec {
 
     private const val MAX_LATENCY_MS = 300_000L
     private const val MAX_DIAGNOSTIC_CHARS = 240
+    private const val MAX_SEMANTIC_SIGNATURE_CHARS = 300
 }

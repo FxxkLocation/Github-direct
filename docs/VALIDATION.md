@@ -53,6 +53,7 @@ $env:GHD_LIVE_TLS_PROBE='1'
 - 未覆盖：设备无 SIM，蜂窝切换无法执行；当前设备未安装 Google、YouTube、Discord、OpenAI 客户端；Android 12、Android 14、Magisk、GitHub App、Chrome、Brave、Firefox 和完整 IPv6 数据面仍待矩阵设备验证。
 - 本次显式公网 TLS 探测通过，覆盖 14 组内置候选的系统信任链、主机名及直连/record 分片能力。
 - 浏览器 TLS 终止：每设备 CA 指纹 `D7:7F:E4:E7:38:7E:96:21:70:55:E6:92:98:F8:BD:CF:BA:01:90:D9:A5:7C:E8:2D:81:BD:1F:DD:2A:0D:6E:CE` 已进入 Android 用户库；Edge 的 `CACertificates` 与 `CAPlatformIntegrationEnabled` 均显示 Platform / Device / Mandatory / OK。同一 DER 的旧 APEX 系统副本已移除。
+- 上述记录早于 Edge 147+ `BuiltInDnsClientEnabled=true` / `DnsOverHttpsMode=off` 策略与 NAT64 IPv6 UID 回落实现；这两项仍是待执行真机项，不能从旧截图或旧 APK 推定通过。
 - Discord Web：登录页安全连接正常；`remote-auth-gateway.discord.gg` 由 `.discord.gg` 受控后缀路由实时覆盖，WebSocket Upgrade 返回 `101` 且 TLS 验证通过；二维码首次加载、断线后自动刷新均已截图验证。Discord 原生客户端与 Voice UDP 尚未验证。
 - ColorOS HANS：Root Binder 租约绑定当前应用 PID。故障注入终止助手 PID `15491` 后约 25 秒自动恢复为 PID `19321`，随后保持活动；Root/CA/TLS 数据面未失活。
 - 上一次文档化的实机 Release SHA-256：`d235751124c1d5f90fb321989da9328d77ed70cdd2182d86f625e3aa4191812c`。该 APK 已覆盖安装并在 R8 单 dex 下恢复 Root helper、CA、HANS、21 条 TLS 路由及 Discord 二维码。
@@ -92,7 +93,7 @@ $env:GHD_LIVE_TLS_PROBE='1'
 4. 注入污染样本 `199.59.148.9`；它只能出现在拦截目标中，不能出现在上游候选。
 5. Wi-Fi 与蜂窝切换后，旧网络健康分不得直接复用；候选地址可以保留并在新网络重新探测。
 6. 验证每域候选不超过 32、探测并发不超过 4，失败退避为 1/5/30 分钟。
-7. 对 `*.googlevideo.com` 等动态子域验证：普通直连候选仍不得变成宽通配地址；同 CDN 池轮换的每个 IP 必须先用固定代表子域独立验证。只有用户授权的 TLS 终止路径可发布显式后缀路由，且每个实际子域仍使用真实 SNI、公开证书链/主机名验证，失败即关闭。
+7. 对 `*.googlevideo.com` 等动态子域验证：普通直连候选仍不得变成宽通配地址；同 CDN 池轮换的每个 IP 必须先用固定代表子域独立验证。跨 `endpointGroup` 的 `candidatePoolScope` 只能由带 HTTP 语义探测的锚点输出种子，且候选持久化的语义策略签名必须与当前规则精确相等；旧快照或策略变更后必须重新探测。接收域必须再做自身 TLS/语义校验。只有用户授权的 TLS 终止路径可发布显式后缀路由，且每个实际子域仍使用真实 SNI、公开证书链/主机名验证，失败即关闭。
 
 ## P2：真实 IP 与 TLS 链路
 
@@ -121,20 +122,31 @@ $env:GHD_LIVE_TLS_PROBE='1'
 5. ClientHello 跨多个 TLS record 时仍能在 64 KiB/1 秒上限内解析；超限、无 SNI 或未知 SNI 必须保护性透传。
 6. TLS 分片不改变握手字节语义，客户端仍由系统执行正常证书验证。
 7. 对显式 Electron-like 宿主，原生 DNS/Cronet 请求即使没有 Java DNS Hook 命中，也必须由 UID 全 TLS 规则进入透明监听器；启用域名按真实 SNI 分类，未知 SNI/非 TLS 按原目的地址透传。
-8. 全 TLS 捕获当前只扩展 IPv4；IPv6 仍按精确候选或系统原生路径。分别记录 IPv4/IPv6 socket、目标地址与防火墙计数，禁止仅凭页面“看似打开”宣称双栈通过。
-9. TLS 终止启用时，用户 CA 必须由 `AndroidCAStore` 精确复验；同一 DER 不得同时存在于系统/APEX 和用户根库。选中的 Edge 138+ 必须同时具有有效 `CACertificates` 与 `CAPlatformIntegrationEnabled` 策略。
+8. 全 TLS 捕获当前只扩展 IPv4；IPv6 仍按精确候选或系统原生路径。唯一例外是已显式启用、通过出口实测、TLS 路由已发布且同代 Root IPv4/vIP 数据面 ACTIVE 的 OpenAI `NON_STRICT_NAT64`：受管 DNS 只可在已发布 exact/suffix 边界内动态把实际查询名的 AAAA 返回为 NODATA；启动/刷新事务期间必须保持原生 AAAA。无 IPv6 netfilter 时，另只允许对所选 UID 与当前快照中的精确 OpenAI `/128` 安装快速不可达兜底。分别记录 DNS 回答、IPv4/IPv6 socket、目标地址与规则计数，禁止仅凭页面“看似打开”宣称双栈通过。
+9. TLS 终止启用时，用户 CA 必须由 `AndroidCAStore` 精确复验；同一 DER 不得同时存在于系统/APEX 和用户根库。选中的 Edge 147+ 必须同时具有有效 `CACertificates`、`CAPlatformIntegrationEnabled`、`BuiltInDnsClientEnabled=true` 与 `DnsOverHttpsMode=off` 策略。
 10. 平台一方后缀可以动态覆盖新子域，但渲染配置不得把任意观测第三方域写成通配路由，也不得把 Google/YouTube 等平台硬转发到固定第三方 ECH CDN；NO-SNI/ECH 上游、公开证书链和真实内层主机名任一失败都必须 fail-close。
 
 ## P3：故障开放与回滚
 
-1. **ipset 路径**：强杀 Root 服务，确认真实 IP 集合约 20 秒租约到期；独立守护器还应在心跳失效 15 秒内删除 DNS/vIP 等本模块链，不形成永久黑洞。
-2. **无 ipset 路径**：强杀 Root 服务，确认守护器在心跳失效 15 秒内只删除本模块明确生成的 `GHD_*` 链。
+1. **ipset 路径**：强杀 Root 服务，确认真实 IP 集合约 20 秒租约到期；独立守护器还应在心跳失效 15 秒内删除 DNS/vIP 等本模块链，以及 NAT64 固定优先级 UID rule/专属表，不形成永久黑洞。
+2. **无 ipset 路径**：强杀 Root 服务，确认守护器在心跳失效 15 秒内只删除本模块明确生成的 `GHD_*` 链与有界 NAT64 策略路由。
 3. 服务重启时旧代规则先清理；新代防火墙成功后 active generation 才变化。
 4. 连续模拟刷新失败，服务保留最后一个安全代次或回滚，并显示失败阶段。
 5. 显式开启开机启动后重启设备，服务恢复；关闭开关后重启不得自启。
 6. 分别关闭 `tls_fragment_v2`、`real_ip_redirect`、`adaptive_candidates`，确认每一层都能独立回滚且不影响非作用域应用。
 7. 在活动连接中执行 Wi-Fi ↔ 蜂窝切换、强停目标应用、强杀模块进程，确认无系统级 DNS/网络残留。
 8. 在 Oplus 系 ROM 上终止 HANS Binder 助手，确认模块在健康检查周期内重建租约；回调错误状态必须保留并出现在诊断中，不能删除后继续伪报 ACTIVE。
+
+## P4：OpenAI 地区与 NAT64 分层验收
+
+1. 默认关闭 `NON_STRICT_NAT64`，先分别记录 `chatgpt.com`、`auth.openai.com`、`api.openai.com` 与 `ws.chatgpt.com` 的 TCP、TLS/ECH、HTTP/应用层结果，禁止把 `Unable to load site` 直接归因于传输失败。
+2. 启用前确认 OpenAI profile、TLS 终止、每设备 CA 与 Edge 147+ CA/DNS 策略均已生效；未满足任一前置条件时开关必须拒绝激活。
+3. 出口探测必须使用当前 generation 中来自 Wire DoH/安全历史等可信来源的 `auth.openai.com` IPv4 种子，不能再次依赖可能污染的系统答案；该种子必须在 NAT64 路径上重新通过公开证书与主机名验证，且 OpenAI auth trace 地区、RIPE origin ASN 与运营主体关键词必须同时匹配用户配置。
+4. NAT64 路由未发布、验证失败、停止或重启期间，OpenAI AAAA 必须保持默认行为；路由发布后，受管 DNS 只可按已发布 exact/suffix 标签边界动态返回 AAAA NODATA，不得扩张到 Google、YouTube、Discord 或未知第三方域。
+5. 在缺少 IPv6 netfilter 的设备上，`ip -6 rule` 只允许覆盖所选 UID，专属表只包含同一 generation 中实际发布 NAT64 TLS 路由的 exact/suffix 标签边界所覆盖的精确 `/128`；单条路由成功不得把其他未通过 ECH/证书预检的 OpenAI 域写入该表。它只作为绕过受管 DNS 的兜底，Google、YouTube、Discord 与非作用域应用不得进入该表。
+6. 打开 `chatgpt.com/auth/login`，只触发一次登录按钮并确认对应账户选择页出现，不实际提交账号；随后分别检查静态资源、二维码、WebSocket 与 SSE/流式响应。
+7. 地区观测匹配只记为“出口实测通过”，平台仍返回地区/账号限制时必须保留原响应并报告，不自动轮换 NAT64 供应方，也不得宣称账号策略已保证通过。
+8. 关闭 NAT64、停止服务、强杀进程与切换网络后，确认受管 DNS 已恢复 AAAA，固定优先级 UID rule 和 `52xxx` 专属表均消失；原生 IPv6 恢复且其他平台无残留影响。
 
 ## 结果记录
 

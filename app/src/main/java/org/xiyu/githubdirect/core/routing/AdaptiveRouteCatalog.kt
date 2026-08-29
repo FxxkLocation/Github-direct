@@ -3,6 +3,7 @@ package org.xiyu.githubdirect.core.routing
 import org.xiyu.githubdirect.core.rules.DomainRule
 import org.xiyu.githubdirect.core.rules.DnsNames
 import org.xiyu.githubdirect.core.rules.ExactMatcher
+import org.xiyu.githubdirect.core.rules.HttpSemanticProbePolicy
 import org.xiyu.githubdirect.core.rules.ServiceProfile
 import org.xiyu.githubdirect.core.rules.SuffixMatcher
 import org.xiyu.githubdirect.core.rules.TransportPolicy
@@ -22,13 +23,23 @@ data class AdaptiveRouteTarget(
     val includeSubdomains: Boolean,
     /** 仅 GitHub 官方 Meta 支持分组；其他平台保持 null。 */
     val githubMetaGroup: String? = null,
-    /** 显式 CDN 候选池；仅与相同 [endpointGroup] 共享，且仍按 [domain] 独立验证。 */
+    /** 显式 CDN 候选池；只共享种子，且仍按 [domain] 独立验证。 */
     val candidatePool: String? = null,
     /** 仅用于候选能力探测；精确规则等于 [domain]，后缀规则为固定代表子域。 */
     val probeDomain: String = domain,
     /** 可选 ECH 公共配置名；上游地址仍必须来自该目标自己的严格验证候选。 */
     val echConfigDomain: String? = null,
-)
+    /** 可选业务语义探测；在同一候选 TLS 连接上校验 HTTP 状态。 */
+    val semanticProbe: HttpSemanticProbePolicy? = null,
+    /** 显式候选池验证边界；缺省时回退到 [endpointGroup]，禁止无边界跨后端共享。 */
+    val candidatePoolScope: String? = null,
+) {
+    /** 无语义策略时兼容旧快照；否则最后一次探测必须使用当前策略签名。 */
+    internal fun matchesSemanticPolicy(candidate: EndpointCandidate): Boolean {
+        val expected = semanticProbe?.verificationSignature() ?: return true
+        return candidate.semanticProbeSignature == expected
+    }
+}
 
 /** 从版本化 profile 生成动态路由目标，避免数据面继续硬编码单个平台。 */
 object AdaptiveRouteCatalog {
@@ -69,6 +80,8 @@ object AdaptiveRouteCatalog {
                         candidatePool = rule.candidatePool,
                         probeDomain = probeDomain,
                         echConfigDomain = rule.echConfigDomain,
+                        semanticProbe = rule.semanticProbe,
+                        candidatePoolScope = rule.candidatePoolScope,
                     )
                     val existing = targets[domain]
                     if (existing == null) {
@@ -80,6 +93,8 @@ object AdaptiveRouteCatalog {
                             candidatePool = existing.candidatePool ?: candidate.candidatePool,
                             probeDomain = probeDomain,
                             echConfigDomain = existing.echConfigDomain ?: candidate.echConfigDomain,
+                            candidatePoolScope = existing.candidatePoolScope
+                                ?: candidate.candidatePoolScope,
                         )
                     }
                 }
@@ -101,6 +116,8 @@ object AdaptiveRouteCatalog {
                 domain to plan.copy(
                     // 清理旧版本可能落盘的宽通配计划，禁止跨 SNI 复用候选。
                     includeSubdomains = plan.includeSubdomains && target.includeSubdomains,
+                    // 新增/变更 HTTP 语义策略后立即淘汰旧结论，不等到 TTL。
+                    candidates = plan.candidates.filter(target::matchesSemanticPolicy),
                 )
             }.toMap(LinkedHashMap()),
             // 当前 schema 的 metaCidrs 仅承载 GitHub Meta；其他平台使用已验证精确候选。
