@@ -278,7 +278,8 @@
                                              "transport":  "TLS_FRAGMENT_RELAY",
                                              "resolver":  "PROVIDER_FIRST",
                                              "endpointGroup":  "youtube-web",
-                                             "candidatePool":  "google-edge"
+                                             "candidatePool":  "google-edge",
+                                             "semanticProbe":  { "path":  "/", "statusMin":  200, "statusMax":  399 }
                                          },
                                          {
                                              "id":  "youtubei-googleapis-com",
@@ -410,7 +411,8 @@
                                              "transport":  "TLS_FRAGMENT_RELAY",
                                              "resolver":  "PROVIDER_FIRST",
                                              "endpointGroup":  "google-web",
-                                             "candidatePool":  "google-edge"
+                                             "candidatePool":  "google-edge",
+                                             "semanticProbe":  { "path":  "/", "statusMin":  200, "statusMax":  399 }
                                          },
                                          {
                                              "id":  "accounts-google-com",
@@ -418,7 +420,8 @@
                                              "transport":  "TLS_FRAGMENT_RELAY",
                                              "resolver":  "PROVIDER_FIRST",
                                              "endpointGroup":  "google-auth",
-                                             "candidatePool":  "google-edge"
+                                             "candidatePool":  "google-edge",
+                                             "semanticProbe":  { "path":  "/", "statusMin":  200, "statusMax":  399 }
                                          },
                                          {
                                              "id":  "play-googleapis-com",
@@ -434,7 +437,8 @@
                                              "transport":  "CLEAN_DNS",
                                              "resolver":  "PROVIDER_FIRST",
                                              "endpointGroup":  "google-static",
-                                             "candidatePool":  "google-edge"
+                                             "candidatePool":  "google-edge",
+                                             "semanticProbe":  { "path":  "/generate_204", "statusMin":  204, "statusMax":  204 }
                                          },
                                          {
                                              "id":  "google-com",

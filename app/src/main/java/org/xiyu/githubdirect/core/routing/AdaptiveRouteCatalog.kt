@@ -3,6 +3,7 @@ package org.xiyu.githubdirect.core.routing
 import org.xiyu.githubdirect.core.rules.DomainRule
 import org.xiyu.githubdirect.core.rules.DnsNames
 import org.xiyu.githubdirect.core.rules.ExactMatcher
+import org.xiyu.githubdirect.core.rules.HttpSemanticProbePolicy
 import org.xiyu.githubdirect.core.rules.ServiceProfile
 import org.xiyu.githubdirect.core.rules.SuffixMatcher
 import org.xiyu.githubdirect.core.rules.TransportPolicy
@@ -28,6 +29,8 @@ data class AdaptiveRouteTarget(
     val probeDomain: String = domain,
     /** 可选 ECH 公共配置名；上游地址仍必须来自该目标自己的严格验证候选。 */
     val echConfigDomain: String? = null,
+    /** 可选业务语义探测；在同一候选 TLS 连接上校验 HTTP 状态。 */
+    val semanticProbe: HttpSemanticProbePolicy? = null,
 )
 
 /** 从版本化 profile 生成动态路由目标，避免数据面继续硬编码单个平台。 */
@@ -69,6 +72,7 @@ object AdaptiveRouteCatalog {
                         candidatePool = rule.candidatePool,
                         probeDomain = probeDomain,
                         echConfigDomain = rule.echConfigDomain,
+                        semanticProbe = rule.semanticProbe,
                     )
                     val existing = targets[domain]
                     if (existing == null) {

@@ -12,6 +12,7 @@ import org.xiyu.githubdirect.core.net.TlsEndpointProbe
 import org.xiyu.githubdirect.core.routing.AdaptiveRouteCatalog
 import org.xiyu.githubdirect.core.routing.AdaptiveRouteTarget
 import org.xiyu.githubdirect.core.routing.CandidatePoolPlanner
+import org.xiyu.githubdirect.core.routing.CandidateFailureStage
 import org.xiyu.githubdirect.core.routing.CandidateSource
 import org.xiyu.githubdirect.core.routing.CommunityHostsParser
 import org.xiyu.githubdirect.core.routing.EndpointCandidate
@@ -57,6 +58,13 @@ class GithubHostsProvider(
         val degradationReason: String = "",
     )
 
+    /** 一个地址当前被采用的来源语义；与历史 [EndpointCandidate] 的健康状态分开保存。 */
+    internal data class CandidateProvenance(
+        val source: CandidateSource,
+        val upstreamEligible: Boolean,
+        val observedThisRound: Boolean,
+    )
+
     override val id: String = spec.providerId
 
     private var store: SettingsStore? = null
@@ -66,7 +74,9 @@ class GithubHostsProvider(
     private var scheduler: ScheduledExecutorService? = null
     @Volatile private var retryFuture: ScheduledFuture<*>? = null
     private var networkSubscription: java.io.Closeable? = null
-    private val syncLock = ReentrantLock()
+    // 网络切换可能连续排入多轮 syncNow。公平锁确保已经等待的数据面事务能在当前
+    // 有界刷新结束后取得发布屏障，避免 Root 规则已安装但状态长期停在 STARTING。
+    private val syncLock = ReentrantLock(true)
     private val refreshFailures = AtomicInteger(0)
     private val probeQueueCursor = AtomicInteger(0)
     private val lifecycleEpoch = AtomicLong()
@@ -229,20 +239,25 @@ class GithubHostsProvider(
     override fun validateIp(ip: String, port: Int): Boolean {
         if (port != 443) return false
         val b = binder ?: return false
-        val probeDomains = runCatching {
-            targetsProvider().associate { it.domain to it.probeDomain }
+        val probeTargets = runCatching {
+            targetsProvider().associateBy(AdaptiveRouteTarget::domain)
         }.getOrDefault(emptyMap())
-        val domains = currentSnapshot.plans.values.asSequence()
+        val targets = currentSnapshot.plans.values.asSequence()
             .filter { plan -> plan.candidates.any { it.address == ip && !it.interceptOnly } }
-            .map { plan -> probeDomains[plan.domain] ?: plan.domain }
-            .distinct()
+            .mapNotNull { plan -> probeTargets[plan.domain] }
+            .distinctBy(AdaptiveRouteTarget::domain)
             .take(4)
             .toList()
-        if (domains.isEmpty()) return false
+        if (targets.isEmpty()) return false
         val probe = TlsEndpointProbe(b, TLS_PROBE_TIMEOUT_MS)
         val allowNoSni = store?.isTlsTerminationEnabled() == true
-        return domains.any { domain ->
-            probe.probe(domain, ip, allowNoSni).capability != RouteCapability.UNUSABLE
+        return targets.any { target ->
+            probe.probe(
+                target.probeDomain,
+                ip,
+                allowNoSni,
+                target.semanticProbe,
+            ).capability != RouteCapability.UNUSABLE
         }
     }
 
@@ -362,9 +377,11 @@ class GithubHostsProvider(
             verifiedProbeAvailable = verifiedProbeAvailable,
         )
         if (roundNeedsRetry) {
+            val probeFailure = probeFailureDegradation(probeResults.values)
             roundDegradation = listOf(
                 roundDegradation,
-                "部分候选未通过 TLS SNI/证书探测；将按 1/5/30 分钟有限重试",
+                probeFailure.ifBlank { "部分候选探测未完成" } +
+                    "；将按 1/5/30 分钟有限重试",
             ).filter(String::isNotBlank).joinToString("；")
         }
         val liveSourceSucceeded = refreshHasLiveSource(
@@ -434,30 +451,36 @@ class GithubHostsProvider(
                 googleRanges = googleRanges,
                 previouslyVerified = previous?.usable(now) == true && !previous.interceptOnly,
             )
-            val eligible = upstreamEligible && ownershipEligible
             val existing = seeds[address]
-            if (existing == null || sourceRank(source) < sourceRank(existing.source)) {
-                seeds[address] = Seed(
-                    target,
-                    address,
-                    source,
-                    previous ?: existing?.previous,
-                    eligible || existing?.upstreamEligible == true,
-                    poolShared || existing?.poolShared == true,
-                    observedThisRound || existing?.observedThisRound == true,
-                )
-            } else if (
-                eligible && !existing.upstreamEligible ||
-                poolShared && !existing.poolShared ||
-                observedThisRound && !existing.observedThisRound
-            ) {
-                seeds[address] = existing.copy(
-                    upstreamEligible = eligible || existing.upstreamEligible,
-                    previous = previous ?: existing.previous,
-                    poolShared = poolShared || existing.poolShared,
-                    observedThisRound = observedThisRound || existing.observedThisRound,
-                )
-            }
+            val effectiveSource = effectiveCandidateSource(
+                candidatePool = target.candidatePool,
+                source = source,
+                ownershipEligible = ownershipEligible,
+            )
+            val incoming = CandidateProvenance(
+                source = effectiveSource,
+                upstreamEligible = upstreamEligible && ownershipEligible &&
+                    sourceCanBecomeUpstream(effectiveSource),
+                observedThisRound = observedThisRound,
+            )
+            val merged = mergeCandidateProvenance(
+                existing = existing?.let {
+                    CandidateProvenance(it.source, it.upstreamEligible, it.observedThisRound)
+                },
+                previousUsable = existing?.previous?.let {
+                    it.usable(now) && !it.interceptOnly
+                } == true,
+                incoming = incoming,
+            )
+            seeds[address] = Seed(
+                target = target,
+                address = address,
+                source = merged.source,
+                previous = previous ?: existing?.previous,
+                upstreamEligible = merged.upstreamEligible,
+                poolShared = poolShared || existing?.poolShared == true,
+                observedThisRound = merged.observedThisRound,
+            )
         }
 
         // 已验证历史先进入，保证无网络启动与刷新失败时仍可工作。
@@ -490,10 +513,23 @@ class GithubHostsProvider(
         }
 
         resolver.discover(target.domain, cidr = null)?.let { discovery ->
-            wireSourceObserved = discovery.trustedResponseObserved
-            (discovery.trusted.v4 + discovery.trusted.v6)
+            val trustedAddresses = (discovery.trusted.v4 + discovery.trusted.v6)
                 .take(MAX_CANDIDATES_PER_SOURCE)
-                .forEach { raw ->
+            val ownershipEligibleTrustedAnswer = trustedAddresses.any { raw ->
+                !IpAddresses.isBogonOrPoisoned(raw) && candidateOwnershipAllowsUpstream(
+                    candidatePool = target.candidatePool,
+                    address = raw,
+                    googleRanges = googleRanges,
+                    previouslyVerified = baseCandidate(base, target.domain, raw)
+                        ?.let { it.usable(now) && !it.interceptOnly } == true,
+                )
+            }
+            wireSourceObserved = trustedResponseCountsAsLiveSource(
+                candidatePool = target.candidatePool,
+                responseObserved = discovery.trustedResponseObserved,
+                ownershipEligibleAnswerObserved = ownershipEligibleTrustedAnswer,
+            )
+            trustedAddresses.forEach { raw ->
                 add(
                     if (raw.size == 4) IpAddresses.ipv4ToString(raw) else IpAddresses.ipv6ToString(raw),
                     CandidateSource.WIRE_DOH,
@@ -609,7 +645,12 @@ class GithubHostsProvider(
             val allowNoSni = store?.isTlsTerminationEnabled() == true
             val tasks = seeds.map { seed ->
                 Callable {
-                    val result = probe.probe(seed.target.probeDomain, seed.address, allowNoSni)
+                    val result = probe.probe(
+                        seed.target.probeDomain,
+                        seed.address,
+                        allowNoSni,
+                        seed.target.semanticProbe,
+                    )
                     val previousOnNetwork = seed.previous?.takeIf { it.networkKey == networkKey }
                     val oldFailures = previousOnNetwork?.failures ?: 0
                     val failures = if (result.capability == RouteCapability.UNUSABLE) oldFailures + 1 else 0
@@ -635,6 +676,7 @@ class GithubHostsProvider(
                         noSniCapable = result.noSniCapable,
                         noSniProbed = result.noSniProbed,
                         lastError = result.error,
+                        failureStage = result.failureStage,
                     )
                 }
             }
@@ -965,6 +1007,8 @@ class GithubHostsProvider(
         private const val INITIAL_REFRESH_DELAY_SEC = 2L
         private const val NETWORK_DEBOUNCE_SEC = 2L
         private const val MIN_REFRESH_HOURS = 6L
+        // Wire DoH 内部还会并行 A/AAAA 与多个加密上游；实机提高到 16 会放大底层
+        // 请求并发并挤压随后 TLS 验证，保持保守的 8 路与 30s 全局边界。
         private const val SOURCE_WORKERS = 8
         private const val SOURCE_DEADLINE_SEC = 30L
         private const val SOURCE_AUXILIARY_DEADLINE_SEC = 8L
@@ -1007,6 +1051,74 @@ class GithubHostsProvider(
             CandidateSource.DNS_OBSERVER,
             -> false
             else -> true
+        }
+
+        /**
+         * Google 官方归属校验失败的地址仍可作为污染观测，但不能继续带着可信来源标签。
+         * 这样它不会占用 TLS 探测槽，也不会挤掉候选硬上限内的官方地址。
+         */
+        internal fun effectiveCandidateSource(
+            candidatePool: String?,
+            source: CandidateSource,
+            ownershipEligible: Boolean,
+        ): CandidateSource = if (
+            candidatePool == GOOGLE_CANDIDATE_POOL &&
+            sourceCanBecomeUpstream(source) && !ownershipEligible
+        ) {
+            CandidateSource.DNS_OBSERVER
+        } else {
+            source
+        }
+
+        /**
+         * 来源优先级只在同一观测代内比较。旧的高可信标签不能被本轮低可信观测续期；
+         * 但尚有效的严格验证历史会保留到原 TTL，由后续轮次重新验证或自然过期。
+         */
+        internal fun mergeCandidateProvenance(
+            existing: CandidateProvenance?,
+            previousUsable: Boolean,
+            incoming: CandidateProvenance,
+        ): CandidateProvenance {
+            if (existing == null) return incoming
+            val incomingRank = sourceRank(incoming.source)
+            val existingRank = sourceRank(existing.source)
+            val preferIncoming = when {
+                incoming.observedThisRound && !existing.observedThisRound ->
+                    incomingRank <= existingRank || !previousUsable
+                !incoming.observedThisRound && existing.observedThisRound -> false
+                else -> incomingRank < existingRank
+            }
+            if (preferIncoming) return incoming
+            if (incoming.source != existing.source) return existing
+            return existing.copy(
+                upstreamEligible = existing.upstreamEligible || incoming.upstreamEligible,
+                observedThisRound = existing.observedThisRound || incoming.observedThisRound,
+            )
+        }
+
+        /** Google 平台不能把只有 NODATA/归属异常答案的响应计作可用候选来源。 */
+        internal fun trustedResponseCountsAsLiveSource(
+            candidatePool: String?,
+            responseObserved: Boolean,
+            ownershipEligibleAnswerObserved: Boolean,
+        ): Boolean = responseObserved && (
+            candidatePool != GOOGLE_CANDIDATE_POOL || ownershipEligibleAnswerObserved
+        )
+
+        internal fun probeFailureDegradation(
+            candidates: Collection<EndpointCandidate>,
+        ): String {
+            val counts = candidates.asSequence()
+                .filter { it.capability == RouteCapability.UNUSABLE }
+                .filter { it.failureStage != CandidateFailureStage.NONE }
+                .groupingBy(EndpointCandidate::failureStage)
+                .eachCount()
+            if (counts.isEmpty()) return ""
+            val details = FAILURE_STAGE_ORDER.mapNotNull { stage ->
+                val count = counts[stage] ?: return@mapNotNull null
+                "${FAILURE_STAGE_LABELS.getValue(stage)}×$count"
+            }
+            return "候选探测失败：${details.joinToString("、")}"
         }
 
         /**
@@ -1171,6 +1283,23 @@ class GithubHostsProvider(
         ): EndpointCandidate? = previous.takeIf { it.expiresAt > now }
 
         private val MAX_EWMA_LATENCY_MS = TimeUnit.MINUTES.toMillis(5)
+
+        private val FAILURE_STAGE_ORDER = listOf(
+            CandidateFailureStage.TCP_CONNECT,
+            CandidateFailureStage.TLS_RESET,
+            CandidateFailureStage.CERTIFICATE,
+            CandidateFailureStage.TLS_HANDSHAKE,
+            CandidateFailureStage.HTTP_SEMANTIC,
+            CandidateFailureStage.INVALID_ADDRESS,
+        )
+        private val FAILURE_STAGE_LABELS = mapOf(
+            CandidateFailureStage.TCP_CONNECT to "TCP/443 建连超时或拒绝",
+            CandidateFailureStage.TLS_RESET to "ClientHello 后连接重置（疑似 SNI 过滤）",
+            CandidateFailureStage.CERTIFICATE to "证书链或主机名校验失败",
+            CandidateFailureStage.TLS_HANDSHAKE to "TLS 握手失败",
+            CandidateFailureStage.HTTP_SEMANTIC to "HTTPS 可达但业务响应不匹配",
+            CandidateFailureStage.INVALID_ADDRESS to "地址格式无效",
+        )
 
         private fun capabilityRank(value: RouteCapability): Int = when (value) {
             RouteCapability.DIRECT_TLS -> 0

@@ -26,6 +26,17 @@ enum class RouteCapability {
     UNUSABLE,
 }
 
+/** 候选最近一次主动探测失败阶段；用于解释降级，不参与放宽信任判定。 */
+enum class CandidateFailureStage {
+    NONE,
+    INVALID_ADDRESS,
+    TCP_CONNECT,
+    TLS_RESET,
+    CERTIFICATE,
+    TLS_HANDSHAKE,
+    HTTP_SEMANTIC,
+}
+
 data class EndpointCandidate(
     val domain: String,
     val address: String,
@@ -49,6 +60,7 @@ data class EndpointCandidate(
     val noSniProbed: Boolean = noSniCapable,
     /** 最近一次主动/被动 TLS 路由失败的有界诊断；成功探测后清空。 */
     val lastError: String = "",
+    val failureStage: CandidateFailureStage = CandidateFailureStage.NONE,
 ) {
     fun usable(now: Long): Boolean =
         !interceptOnly && capability != RouteCapability.UNUSABLE
@@ -173,6 +185,9 @@ object RouteSnapshotCodec {
                 sanitizeDiagnostic(candidate.lastError).takeIf(String::isNotEmpty)?.let {
                     encoded.put("lastError", it)
                 }
+                if (candidate.failureStage != CandidateFailureStage.NONE) {
+                    encoded.put("failureStage", candidate.failureStage.name)
+                }
                 candidates.put(encoded)
             }
             plans.put(
@@ -233,6 +248,9 @@ object RouteSnapshotCodec {
                             capability == RouteCapability.NO_SNI_TLS,
                         ),
                         lastError = sanitizeDiagnostic(c.optString("lastError")),
+                        failureStage = enumValue<CandidateFailureStage>(
+                            c.optString("failureStage"),
+                        ) ?: CandidateFailureStage.NONE,
                     )
                 }
                 decodedPlans[domain] = EndpointPlan(

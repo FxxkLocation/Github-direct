@@ -3,6 +3,7 @@ package org.xiyu.githubdirect.root
 import android.content.Context
 import android.os.Build
 import android.os.SystemClock
+import android.util.Log
 import org.xiyu.githubdirect.core.data.Nat64FallbackActivation
 import org.xiyu.githubdirect.core.routing.RouteSnapshot
 import org.xiyu.githubdirect.data.DirectEngine
@@ -65,6 +66,11 @@ class SniGateRuntime(
     @Volatile
     private var lastNat64Observation = Nat64EgressObservation.NONE
 
+    /** 每条未通过路由独立按 1/5/30 分钟退避；显式 REPROBE 可绕过等待。 */
+    private val failedRouteRetries = LinkedHashMap<TlsTerminationRoute, RouteVerificationRetry>()
+
+    private data class RouteVerificationRetry(val failures: Int, val nextAt: Long)
+
     fun certificateFile(): File = caCert
 
     fun status(): SniGateRuntimeStatus = lastStatus
@@ -88,9 +94,14 @@ class SniGateRuntime(
      * TransparentTcpListener / iptables 数据面。
      */
     @Synchronized
-    fun ensureRunning(snapshot: RouteSnapshot): SniGateRuntimeStatus {
+    fun ensureRunning(
+        snapshot: RouteSnapshot,
+        forceVerification: Boolean = false,
+    ): SniGateRuntimeStatus {
         val eligibleNat64Domains = DirectEngine.enabledNat64FallbackDomains()
         val configuredNat64 = DirectEngine.settings()?.nat64FallbackConfig()?.activationOrNull()
+        val previousNat64Activation = activeNat64Activation
+        val previousNat64Observation = lastNat64Observation
         activeNat64Activation = configuredNat64
         lastNat64Observation = when {
             configuredNat64 == null -> Nat64EgressObservation.NONE
@@ -98,7 +109,15 @@ class SniGateRuntime(
                 observedAt = System.currentTimeMillis(),
                 detail = "没有已启用且允许 NAT64 的 OpenAI/ChatGPT 规则",
             )
-            else -> nat64EgressProbe.probe(configuredNat64)
+            else -> reusableNat64Observation(
+                previousActivation = previousNat64Activation,
+                configuredActivation = configuredNat64,
+                observation = previousNat64Observation,
+                now = System.currentTimeMillis(),
+                maxAgeMs = NAT64_OBSERVATION_REUSE_MS,
+            ).takeUnless { forceVerification }?.also {
+                Log.i(TAG, "reuse verified NAT64 observation age=${System.currentTimeMillis() - it.observedAt}ms")
+            } ?: nat64EgressProbe.probe(configuredNat64)
         }
         val verifiedNat64 = configuredNat64?.takeIf { lastNat64Observation.verified }
         val plan = TlsTerminationPlanner.plan(
@@ -113,13 +132,40 @@ class SniGateRuntime(
             stopInternal(clearRoutes = true, clearNat64State = false)
             return failed("没有可发布的 TLS 终止路由")
         }
-        if (canReuseSniGatePlan(activeRequestedPlan, plan, activePlan, isLocalPortOpen())) {
-            TlsTerminationRouteRegistry.publish(activePlan)
-            return statusFor(activePlan).also {
+        val now = System.currentTimeMillis()
+        failedRouteRetries.keys.retainAll(plan.routes.toSet())
+        val decision = sniGateVerificationDecision(
+            activeRequestedPlan = activeRequestedPlan,
+            requestedPlan = plan,
+            publishedPlan = activePlan,
+            localPortOpen = isLocalPortOpen(),
+            forceVerification = forceVerification,
+            now = now,
+            retryAtByRoute = failedRouteRetries.mapValues { it.value.nextAt },
+        )
+        if (decision.routesToVerify.isEmpty() && decision.reusedRoutes.isNotEmpty()) {
+            val reused = TlsTerminationPlan(plan.generation, decision.reusedRoutes)
+            activeRequestedPlan = plan
+            activePlan = reused
+            TlsTerminationRouteRegistry.publish(reused)
+            val deferred = plan.routes.size - reused.routes.size
+            Log.i(
+                TAG,
+                "reuse verified TLS routes generation=${reused.generation}, " +
+                    "routes=${reused.routes.size}, deferred=$deferred",
+            )
+            val detail = "复用 ${reused.routes.size} 条已验证本机 TLS 路由" +
+                if (deferred > 0) "；$deferred 条失败路由等待有限退避重验" else ""
+            return statusFor(reused, detail).also {
                 lastStatus = it
             }
         }
-        return startInternal(plan, publish = true)
+        return startInternal(
+            plan = plan,
+            publish = true,
+            routesToVerify = decision.routesToVerify,
+            reusedRoutes = decision.reusedRoutes,
+        )
     }
 
     @Synchronized
@@ -127,7 +173,12 @@ class SniGateRuntime(
         stopInternal(clearRoutes = true)
     }
 
-    private fun startInternal(plan: TlsTerminationPlan, publish: Boolean): SniGateRuntimeStatus {
+    private fun startInternal(
+        plan: TlsTerminationPlan,
+        publish: Boolean,
+        routesToVerify: List<TlsTerminationRoute> = plan.routes,
+        reusedRoutes: List<TlsTerminationRoute> = emptyList(),
+    ): SniGateRuntimeStatus {
         TlsTerminationRouteRegistry.clear()
         activePlan = TlsTerminationPlan.EMPTY
         activeRequestedPlan = TlsTerminationPlan.EMPTY
@@ -151,13 +202,27 @@ class SniGateRuntime(
         var publishPlan = plan
         var verification: SniGateRouteVerification? = null
         if (publish) {
+            val verificationTarget = TlsTerminationPlan(plan.generation, routesToVerify)
             verification = try {
-                SniGateRouteVerifier(caCert).verify(plan)
+                SniGateRouteVerifier(caCert).verify(verificationTarget)
             } catch (t: Throwable) {
                 stopRootProcess()
                 return failed("TLS 终止路由验证失败：${failureText(t)}")
             }
-            publishPlan = verification.plan
+            updateRouteVerificationRetries(routesToVerify, verification.plan.routes)
+            val accepted = (reusedRoutes + verification.plan.routes).toHashSet()
+            publishPlan = TlsTerminationPlan(
+                plan.generation,
+                plan.routes.filter(accepted::contains),
+            )
+            Log.i(
+                TAG,
+                "TLS plan verification generation=${plan.generation}, " +
+                    "reused=${reusedRoutes.size}, " +
+                    "passed=${verification.plan.routes.size}/${verification.attempted}, " +
+                    "published=${publishPlan.routes.size}/${plan.routes.size}, " +
+                    "failed=${verification.failures.size}",
+            )
             if (publishPlan.routes.isEmpty()) {
                 stopRootProcess()
                 return failed(
@@ -180,7 +245,8 @@ class SniGateRuntime(
         activePlan = publishPlan
         if (publish) TlsTerminationRouteRegistry.publish(publishPlan)
         val detail = verification?.let {
-            "已验证 ${publishPlan.routes.size}/${it.attempted} 条本机 TLS 终止路由"
+            "复用 ${reusedRoutes.size} 条；本轮验证通过 ${it.plan.routes.size}/${it.attempted} 条；" +
+                "发布 ${publishPlan.routes.size}/${plan.routes.size} 条本机 TLS 终止路由"
         }.orEmpty()
         return statusFor(publishPlan, detail).also { lastStatus = it }
     }
@@ -324,11 +390,32 @@ class SniGateRuntime(
         stopRootProcess()
         activePlan = TlsTerminationPlan.EMPTY
         activeRequestedPlan = TlsTerminationPlan.EMPTY
+        failedRouteRetries.clear()
         if (clearNat64State) {
             activeNat64Activation = null
             lastNat64Observation = Nat64EgressObservation.NONE
         }
         lastStatus = SniGateRuntimeStatus(false)
+    }
+
+    private fun updateRouteVerificationRetries(
+        attempted: List<TlsTerminationRoute>,
+        successful: List<TlsTerminationRoute>,
+    ) {
+        val successfulSet = successful.toHashSet()
+        val now = System.currentTimeMillis()
+        for (route in attempted) {
+            if (route in successfulSet) {
+                failedRouteRetries.remove(route)
+                continue
+            }
+            val failures = ((failedRouteRetries[route]?.failures ?: 0) + 1)
+                .coerceAtMost(PLAN_VERIFICATION_RETRY_MS.size)
+            failedRouteRetries[route] = RouteVerificationRetry(
+                failures = failures,
+                nextAt = saturatingAdd(now, PLAN_VERIFICATION_RETRY_MS[failures - 1]),
+            )
+        }
     }
 
     private fun stopRootProcess() {
@@ -439,6 +526,13 @@ class SniGateRuntime(
         private const val START_COMMAND_TIMEOUT_SECONDS = 12
         private const val STOP_COMMAND_TIMEOUT_SECONDS = 5
         private const val BINARY_INSTALL_TIMEOUT_SECONDS = 20
+        private const val NAT64_OBSERVATION_REUSE_MS = 5 * 60 * 1_000L
+        private const val TAG = "SniGateRuntime"
+        private val PLAN_VERIFICATION_RETRY_MS = longArrayOf(
+            60_000L,
+            5 * 60_000L,
+            30 * 60_000L,
+        )
     }
 }
 
@@ -458,10 +552,59 @@ internal fun sniGateStopScript(): String = buildString {
     appendLine("fi")
 }
 
-internal fun canReuseSniGatePlan(
+internal data class SniGateVerificationDecision(
+    val reusedRoutes: List<TlsTerminationRoute>,
+    val routesToVerify: List<TlsTerminationRoute>,
+)
+
+internal fun sniGateVerificationDecision(
     activeRequestedPlan: TlsTerminationPlan,
     requestedPlan: TlsTerminationPlan,
     publishedPlan: TlsTerminationPlan,
     localPortOpen: Boolean,
-): Boolean =
-    localPortOpen && publishedPlan.routes.isNotEmpty() && activeRequestedPlan == requestedPlan
+    forceVerification: Boolean = false,
+    now: Long = 0L,
+    retryAtByRoute: Map<TlsTerminationRoute, Long> = emptyMap(),
+): SniGateVerificationDecision {
+    if (
+        forceVerification ||
+        !localPortOpen ||
+        publishedPlan.routes.isEmpty() ||
+        activeRequestedPlan.routes.isEmpty()
+    ) {
+        return SniGateVerificationDecision(emptyList(), requestedPlan.routes)
+    }
+
+    val previouslyRequested = activeRequestedPlan.routes.toHashSet()
+    val previouslyVerified = publishedPlan.routes.toHashSet()
+    val reused = ArrayList<TlsTerminationRoute>(requestedPlan.routes.size)
+    val verify = ArrayList<TlsTerminationRoute>()
+    for (route in requestedPlan.routes) {
+        when {
+            route in previouslyVerified -> reused += route
+            route !in previouslyRequested -> verify += route
+            now >= (retryAtByRoute[route] ?: 0L) -> verify += route
+        }
+    }
+    return SniGateVerificationDecision(reused, verify)
+}
+
+internal fun saturatingAdd(value: Long, delta: Long): Long {
+    require(delta >= 0L) { "delta must not be negative" }
+    return if (value > Long.MAX_VALUE - delta) Long.MAX_VALUE else value + delta
+}
+
+/** 只复用当前进程内、同一显式配置且仍在短 TTL 内的成功出口实测。 */
+internal fun reusableNat64Observation(
+    previousActivation: Nat64FallbackActivation?,
+    configuredActivation: Nat64FallbackActivation?,
+    observation: Nat64EgressObservation,
+    now: Long,
+    maxAgeMs: Long,
+): Nat64EgressObservation? {
+    require(maxAgeMs >= 0L) { "max age must not be negative" }
+    if (configuredActivation == null || previousActivation != configuredActivation) return null
+    if (!observation.verified) return null
+    val age = now - observation.observedAt
+    return observation.takeIf { age in 0..maxAgeMs }
+}

@@ -13,6 +13,54 @@ import org.xiyu.githubdirect.core.data.Nat64FallbackActivation
 
 class SniGateRoutesTest {
     @Test
+    fun `verified NAT64 observation is reused only for the same activation inside TTL`() {
+        val activation = Nat64FallbackActivation(
+            prefix = "2a01:4f8:c2c:123f:64:5:0:0/96",
+            operator = "Example NAT64",
+            expectedAsn = "AS24940",
+            expectedRegion = "US",
+        )
+        val observation = Nat64EgressObservation(
+            verified = true,
+            publicIp = "203.0.113.8",
+            observedAt = 1_000L,
+        )
+
+        assertEquals(
+            observation,
+            reusableNat64Observation(activation, activation, observation, 1_999L, 1_000L),
+        )
+        assertEquals(
+            null,
+            reusableNat64Observation(activation, activation, observation, 2_001L, 1_000L),
+        )
+        assertEquals(
+            null,
+            reusableNat64Observation(
+                activation,
+                activation.copy(expectedRegion = "DE"),
+                observation,
+                1_500L,
+                1_000L,
+            ),
+        )
+        assertEquals(
+            null,
+            reusableNat64Observation(
+                activation,
+                activation,
+                observation.copy(verified = false),
+                1_500L,
+                1_000L,
+            ),
+        )
+        assertEquals(
+            null,
+            reusableNat64Observation(activation, activation, observation, 999L, 1_000L),
+        )
+    }
+
+    @Test
     fun `stale sni-gate PID only kills the exact module binary prefix`() {
         val script = sniGateStopScript()
         assertTrue(
@@ -24,29 +72,87 @@ class SniGateRoutesTest {
     }
 
     @Test
-    fun `runtime only reuses an identical requested plan even when generation matches`() {
+    fun `runtime reuses unchanged routes and verifies only changed or due failures`() {
         val route = TlsTerminationRoute(
             domain = "discord.gg",
             includeSubdomains = true,
             method = TlsTerminationMethod.ECH,
         )
+        val api = route.copy(domain = "api.openai.com", includeSubdomains = false)
         val requested = TlsTerminationPlan(
             7,
-            listOf(route, route.copy(domain = "api.openai.com", includeSubdomains = false)),
+            listOf(route, api),
         )
         val verifiedSubset = TlsTerminationPlan(7, listOf(route))
+        val fullyVerified = requested.copy()
 
-        assertTrue(canReuseSniGatePlan(requested, requested.copy(), verifiedSubset, true))
-        assertFalse(
-            canReuseSniGatePlan(
-                requested,
-                TlsTerminationPlan(7, listOf(route.copy(domain = "youtube.com"))),
-                verifiedSubset,
-                true,
-            ),
+        val deferred = sniGateVerificationDecision(
+            requested,
+            requested.copy(generation = 8),
+            verifiedSubset,
+            true,
+            now = 1_500L,
+            retryAtByRoute = mapOf(api to 2_000L),
         )
-        assertFalse(canReuseSniGatePlan(requested, requested, verifiedSubset, false))
-        assertFalse(canReuseSniGatePlan(requested, requested, TlsTerminationPlan.EMPTY, true))
+        assertEquals(listOf(route), deferred.reusedRoutes)
+        assertEquals(emptyList<TlsTerminationRoute>(), deferred.routesToVerify)
+
+        val due = sniGateVerificationDecision(
+            requested,
+            requested.copy(generation = 8),
+            verifiedSubset,
+            true,
+            now = 2_000L,
+            retryAtByRoute = mapOf(api to 2_000L),
+        )
+        assertEquals(listOf(route), due.reusedRoutes)
+        assertEquals(listOf(api), due.routesToVerify)
+
+        val changed = route.copy(domain = "youtube.com")
+        val changedDecision = sniGateVerificationDecision(
+            requested,
+            TlsTerminationPlan(8, listOf(route, changed)),
+            verifiedSubset,
+            true,
+            now = 1_500L,
+            retryAtByRoute = mapOf(api to 2_000L),
+        )
+        assertEquals(listOf(route), changedDecision.reusedRoutes)
+        assertEquals(listOf(changed), changedDecision.routesToVerify)
+
+        val allReused = sniGateVerificationDecision(
+            requested,
+            requested.copy(generation = 8),
+            fullyVerified,
+            true,
+        )
+        assertEquals(requested.routes, allReused.reusedRoutes)
+        assertEquals(emptyList<TlsTerminationRoute>(), allReused.routesToVerify)
+
+        val forced = sniGateVerificationDecision(
+            requested,
+            requested.copy(generation = 8),
+            fullyVerified,
+            true,
+            forceVerification = true,
+        )
+        assertEquals(emptyList<TlsTerminationRoute>(), forced.reusedRoutes)
+        assertEquals(requested.routes, forced.routesToVerify)
+
+        val localDown = sniGateVerificationDecision(
+            requested,
+            requested,
+            verifiedSubset,
+            false,
+        )
+        assertEquals(emptyList<TlsTerminationRoute>(), localDown.reusedRoutes)
+        assertEquals(requested.routes, localDown.routesToVerify)
+    }
+
+    @Test
+    fun `verification retry deadline addition saturates instead of overflowing`() {
+        assertEquals(3_000L, saturatingAdd(1_000L, 2_000L))
+        assertEquals(Long.MAX_VALUE, saturatingAdd(Long.MAX_VALUE - 5L, 10L))
     }
 
     @Test

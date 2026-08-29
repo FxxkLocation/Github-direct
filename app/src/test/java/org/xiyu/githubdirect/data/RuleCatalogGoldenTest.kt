@@ -7,9 +7,11 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.xiyu.githubdirect.core.data.SettingsStore
+import org.xiyu.githubdirect.core.rules.DomainRule
 import org.xiyu.githubdirect.core.rules.IndexedRule
 import org.xiyu.githubdirect.core.rules.MatcherIndex
 import org.xiyu.githubdirect.core.rules.RuleRegistry
+import org.xiyu.githubdirect.core.rules.SuffixMatcher
 import org.xiyu.githubdirect.core.rules.TransportPolicy
 import org.xiyu.githubdirect.core.rules.VerifyStatus
 import java.io.File
@@ -195,6 +197,17 @@ class RuleCatalogGoldenTest {
             })
         }
         assertTrue(catalog.getValue("discord").domains.all { it.candidatePool == null })
+    }
+
+    @Test
+    fun `Google主入口声明有界业务语义探测而后缀规则不伪造探测域`() {
+        val catalog = loadCatalog()
+        val policies = (catalog.getValue("google-llc").domains + catalog.getValue("youtube").domains)
+            .associateBy(DomainRule::id)
+        listOf("www-google-com", "accounts-google-com", "www-gstatic-com", "www-youtube-com")
+            .forEach { id -> assertNotNull("$id 缺少语义探测", policies.getValue(id).semanticProbe) }
+        assertTrue(policies.values.filter { it.matcher is SuffixMatcher }.all { it.semanticProbe == null })
+        assertEquals("/generate_204", policies.getValue("www-gstatic-com").semanticProbe?.path)
     }
 
     @Test
