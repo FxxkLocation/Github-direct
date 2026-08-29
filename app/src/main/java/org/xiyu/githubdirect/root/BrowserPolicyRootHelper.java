@@ -18,11 +18,14 @@ import java.util.Base64;
 /**
  * Short-lived UID 0 entry point that owns one Android application-restrictions entity.
  *
- * <p>Microsoft Edge 138+ accepts a base64 DER CA through the {@code CACertificates} Android
- * policy. Newer platform revisions support an independently-owned system restrictions entity;
- * Android 16 API 36 instead exposes the legacy UserManager bundle, which is merged conservatively.
- * The helper reads only the public CA while UID 0 and irreversibly drops to UID 1000 before any
- * policy write.</p>
+ * <p>Microsoft Edge accepts a base64 DER CA through {@code CACertificates}; current Android Edge
+ * also exposes mandatory DNS policies. The helper disables browser DoH while keeping Edge's
+ * built-in plaintext DNS client enabled, so DNS packets retain the browser UID and enter
+ * GitHub-direct's scoped Root DNS data plane instead of receiving a rotating AAAA outside the
+ * active snapshot. Newer platform revisions support an independently
+ * owned system restrictions entity; Android 16 API 36 instead exposes the legacy UserManager
+ * bundle, which is merged conservatively. The helper reads only the public CA while UID 0 and
+ * irreversibly drops to UID 1000 before any policy write.</p>
  */
 public final class BrowserPolicyRootHelper {
     private static final String MARKER = "GHD_BROWSER_POLICY_V1";
@@ -35,6 +38,14 @@ public final class BrowserPolicyRootHelper {
     private static final String EDGE_PACKAGE = "com.microsoft.emmx";
     private static final String POLICY_CA_CERTIFICATES = "CACertificates";
     private static final String POLICY_PLATFORM_CA = "CAPlatformIntegrationEnabled";
+    private static final String POLICY_BUILTIN_DNS = "BuiltInDnsClientEnabled";
+    private static final String POLICY_DOH_MODE = "DnsOverHttpsMode";
+    private static final String OWN_BUILTIN_DNS =
+            "org.xiyu.githubdirect.policy.BuiltInDnsClientEnabled";
+    private static final String OWN_DOH_MODE =
+            "org.xiyu.githubdirect.policy.DnsOverHttpsMode";
+    private static final boolean BUILTIN_DNS_ENABLED = true;
+    private static final String DOH_OFF = "off";
     private static final int SYSTEM_UID = 1000;
     private static final int USER_SYSTEM = 0;
     private static final int MAX_CERT_BYTES = 256 * 1024;
@@ -75,6 +86,7 @@ public final class BrowserPolicyRootHelper {
                         POLICY_CA_CERTIFICATES,
                         appendCertificate(current, expectedBase64));
                 policies.putBoolean(POLICY_PLATFORM_CA, true);
+                installDnsPolicies(current, policies);
                 setRestrictions(backend, packageName, policies);
             } else if ("remove".equals(operation)) {
                 Bundle policies = new Bundle(getRestrictions(backend, packageName));
@@ -86,17 +98,20 @@ public final class BrowserPolicyRootHelper {
                     } else {
                         policies.putStringArray(POLICY_CA_CERTIFICATES, remaining);
                     }
-                    setRestrictions(backend, packageName, policies);
                 }
+                removeOwnedDnsPolicies(policies);
+                setRestrictions(backend, packageName, policies);
             }
 
             Bundle current = getRestrictions(backend, packageName);
             boolean present = containsCertificate(current, expectedBase64)
-                    && current.getBoolean(POLICY_PLATFORM_CA, false);
+                    && current.getBoolean(POLICY_PLATFORM_CA, false)
+                    && dnsPoliciesPresent(current);
             boolean ok = "status".equals(operation)
                     || ("install".equals(operation) && present)
                     || ("remove".equals(operation) && !containsCertificate(
-                            current, expectedBase64));
+                            current, expectedBase64)
+                            && ownedDnsPoliciesAbsent(current));
             print(ok, present, packageName,
                     (present ? "installed:" : "missing:") + backend.kind);
             exit = ok ? 0 : 1;
@@ -268,6 +283,66 @@ public final class BrowserPolicyRootHelper {
             if (!constantTimeEquals(value, expectedBase64)) result[index++] = value;
         }
         return result;
+    }
+
+    private static void installDnsPolicies(Bundle current, Bundle policies) {
+        if (current.containsKey(POLICY_BUILTIN_DNS)) {
+            Object value = current.get(POLICY_BUILTIN_DNS);
+            if (!(value instanceof Boolean) || !((Boolean) value)) {
+                if (!current.getBoolean(OWN_BUILTIN_DNS, false)) {
+                    throw new SecurityException("existing policy disables built-in DNS");
+                }
+                // Migrate the module-owned v1 policy that incorrectly delegated DNS to netd.
+                policies.putBoolean(POLICY_BUILTIN_DNS, BUILTIN_DNS_ENABLED);
+            }
+        } else {
+            policies.putBoolean(POLICY_BUILTIN_DNS, BUILTIN_DNS_ENABLED);
+            policies.putBoolean(OWN_BUILTIN_DNS, true);
+        }
+
+        if (current.containsKey(POLICY_DOH_MODE)) {
+            Object value = current.get(POLICY_DOH_MODE);
+            if (!(value instanceof String) || !DOH_OFF.equals(value)) {
+                if (!current.getBoolean(OWN_DOH_MODE, false)) {
+                    throw new SecurityException("existing policy does not disable DNS-over-HTTPS");
+                }
+                // Repair only a value previously marked as module-owned; never override admin
+                // or user policy that this helper did not create.
+                policies.putString(POLICY_DOH_MODE, DOH_OFF);
+            }
+        } else {
+            policies.putString(POLICY_DOH_MODE, DOH_OFF);
+            policies.putBoolean(OWN_DOH_MODE, true);
+        }
+    }
+
+    private static boolean dnsPoliciesPresent(Bundle policies) {
+        Object builtIn = policies.get(POLICY_BUILTIN_DNS);
+        Object doh = policies.get(POLICY_DOH_MODE);
+        return builtIn instanceof Boolean && ((Boolean) builtIn)
+                && doh instanceof String && DOH_OFF.equals(doh);
+    }
+
+    private static void removeOwnedDnsPolicies(Bundle policies) {
+        if (policies.getBoolean(OWN_BUILTIN_DNS, false)) {
+            Object value = policies.get(POLICY_BUILTIN_DNS);
+            if (value instanceof Boolean && ((Boolean) value)) {
+                policies.remove(POLICY_BUILTIN_DNS);
+            }
+            policies.remove(OWN_BUILTIN_DNS);
+        }
+        if (policies.getBoolean(OWN_DOH_MODE, false)) {
+            Object value = policies.get(POLICY_DOH_MODE);
+            if (value instanceof String && DOH_OFF.equals(value)) {
+                policies.remove(POLICY_DOH_MODE);
+            }
+            policies.remove(OWN_DOH_MODE);
+        }
+    }
+
+    private static boolean ownedDnsPoliciesAbsent(Bundle policies) {
+        return !policies.containsKey(OWN_BUILTIN_DNS)
+                && !policies.containsKey(OWN_DOH_MODE);
     }
 
     private static boolean constantTimeEquals(String left, String right) {

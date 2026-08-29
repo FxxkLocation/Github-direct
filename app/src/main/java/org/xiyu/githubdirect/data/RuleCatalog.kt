@@ -8,6 +8,7 @@ import org.xiyu.githubdirect.core.rules.DomainRule
 import org.xiyu.githubdirect.core.rules.DnsNames
 import org.xiyu.githubdirect.core.rules.ExactMatcher
 import org.xiyu.githubdirect.core.rules.HostsProviderSpec
+import org.xiyu.githubdirect.core.rules.HttpSemanticProbePolicy
 import org.xiyu.githubdirect.core.rules.ResolverPolicy
 import org.xiyu.githubdirect.core.rules.ServiceProfile
 import org.xiyu.githubdirect.core.rules.SuffixMatcher
@@ -128,8 +129,10 @@ object RuleCatalog {
         val endpointGroup = safeReference(obj.optString("endpointGroup"))
         val cidrRef = safeReference(obj.optString("cidrRef"))
         val candidatePool = safeReference(obj.optString("candidatePool"))
+        val candidatePoolScope = safeReference(obj.optString("candidatePoolScope"))
         val echConfigDomain = DnsNames.normalize(obj.optString("echConfigDomain"))
         val nat64FallbackEligible = obj.optBoolean("nat64FallbackEligible", false)
+        val semanticProbe = parseSemanticProbe(obj.optJSONObject("semanticProbe"))
 
         return DomainRule(
             id = id,
@@ -145,6 +148,17 @@ object RuleCatalog {
             candidatePool = candidatePool,
             echConfigDomain = echConfigDomain,
             nat64FallbackEligible = nat64FallbackEligible,
+            semanticProbe = semanticProbe,
+            candidatePoolScope = candidatePoolScope,
+        )
+    }
+
+    private fun parseSemanticProbe(obj: JSONObject?): HttpSemanticProbePolicy? {
+        obj ?: return null
+        return HttpSemanticProbePolicy.create(
+            path = obj.optString("path"),
+            statusMin = obj.optInt("statusMin", 200),
+            statusMax = obj.optInt("statusMax", 399),
         )
     }
 

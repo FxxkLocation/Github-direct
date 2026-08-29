@@ -18,12 +18,22 @@ import org.xiyu.githubdirect.root.RootBackendFailure
 import org.xiyu.githubdirect.root.RootCapabilities
 import org.xiyu.githubdirect.root.RootCapabilityProbe
 import org.xiyu.githubdirect.root.RootShell
+import org.xiyu.githubdirect.root.TlsTerminationRouteRegistry
 import org.xiyu.githubdirect.root.TransparentDnsListener
 import org.xiyu.githubdirect.root.TransparentTcpListener
 import org.xiyu.githubdirect.root.OriginalDestination
 import org.xiyu.githubdirect.core.routing.RouteSnapshot
 import org.xiyu.githubdirect.vpn.DnsVpnService
 import java.util.concurrent.CopyOnWriteArrayList
+
+/** 同一 RouteSnapshot generation 中实际发布的 NAT64 TLS 路由边界。 */
+data class VerifiedNat64RouteScope(
+    val generation: Long,
+    val exactDomains: Set<String>,
+    val suffixDomains: Set<String>,
+) {
+    fun isEmpty(): Boolean = exactDomains.isEmpty() && suffixDomains.isEmpty()
+}
 
 /**
  * Root 后端控制抽象（集成层依赖注入点；测试用 fake，生产用 [RootBackendAdapter]）。
@@ -39,6 +49,10 @@ interface RootBackendControl {
     val realIpRedirectActive: Boolean get() = false
 
     val ipv6RealIpRedirectActive: Boolean get() = false
+
+    val nat64Ipv6FallbackActive: Boolean get() = false
+
+    val nat64Ipv6FallbackDestinationCount: Int get() = 0
 
     val fullTlsCaptureUidCount: Int get() = 0
 
@@ -96,6 +110,9 @@ class RootBackendAdapter(
     override val activeGeneration: Long get() = backend.activeGeneration
     override val realIpRedirectActive: Boolean get() = backend.realIpRedirectActive
     override val ipv6RealIpRedirectActive: Boolean get() = backend.ipv6RealIpRedirectActive
+    override val nat64Ipv6FallbackActive: Boolean get() = backend.nat64Ipv6FallbackActive
+    override val nat64Ipv6FallbackDestinationCount: Int
+        get() = backend.nat64Ipv6FallbackDestinationCount
     override val fullTlsCaptureUidCount: Int get() = backend.fullTlsCaptureUidCount
     override val ipSetLeaseActive: Boolean get() = backend.ipSetLeaseActive
     override val failOpenGuardianActive: Boolean get() = backend.failOpenGuardianActive
@@ -199,6 +216,17 @@ class BackendManager @JvmOverloads constructor(
     private val onRootPrepare: () -> Unit = {},
     private val routeSnapshotProvider: () -> RouteSnapshot = { DirectEngine.routeSnapshot() },
     private val originalDestinationAvailable: () -> Boolean = OriginalDestination::available,
+    private val nat64FallbackDomainsProvider: () -> Set<String> = {
+        DirectEngine.enabledNat64FallbackDomains()
+    },
+    private val nat64FallbackActiveProvider: () -> Boolean = {
+        TlsTerminationRouteRegistry.snapshot().routes.any { it.nat64Prefix != null }
+    },
+    /**
+     * 生产装配提供实际发布的 exact/suffix 边界；null 仅保留旧的可注入测试边界。
+     * 非空 provider 返回空/旧 generation 时必须 fail-closed，不能退回全部启用域。
+     */
+    private val nat64VerifiedScopeProvider: (() -> VerifiedNat64RouteScope)? = null,
 ) {
 
     @Volatile
@@ -275,6 +303,11 @@ class BackendManager @JvmOverloads constructor(
     fun realIpRedirectActive(): Boolean = rootBackend?.realIpRedirectActive == true
 
     fun ipv6RealIpRedirectActive(): Boolean = rootBackend?.ipv6RealIpRedirectActive == true
+
+    fun nat64Ipv6FallbackActive(): Boolean = rootBackend?.nat64Ipv6FallbackActive == true
+
+    fun nat64Ipv6FallbackDestinationCount(): Int =
+        rootBackend?.nat64Ipv6FallbackDestinationCount ?: 0
 
     fun fullTlsCaptureUidCount(): Int = rootBackend?.fullTlsCaptureUidCount ?: 0
 
@@ -661,6 +694,34 @@ class BackendManager @JvmOverloads constructor(
             AppScopeMode.EXCLUDED_APPS -> uids.take(FirewallRules.MAX_EXCLUDED_UIDS).toSet()
             AppScopeMode.SELECTED_APPS -> uids.take(MAX_SELECTED_UIDS).toSet()
         }
+        val verifiedNat64Scope = nat64VerifiedScopeProvider?.invoke()?.takeIf { scope ->
+            scope.generation == snapshot.generation && !scope.isEmpty()
+        }
+        val nat64RoutePublished = if (nat64VerifiedScopeProvider != null) {
+            verifiedNat64Scope != null
+        } else {
+            // 兼容直接构造 BackendManager 的旧注入边界；Android 生产装配不会走这里。
+            nat64FallbackActiveProvider()
+        }
+        val nat64Ipv6Fallback = if (
+            mode == AppScopeMode.SELECTED_APPS && enableRealRedirect &&
+            capabilities.ipv6UidPolicyRouting && !capabilities.ipv6Netfilter &&
+            settings.nat64FallbackConfig().activationOrNull() != null &&
+            nat64RoutePublished
+        ) {
+            val destinations = if (verifiedNat64Scope != null) {
+                snapshot.candidateDestinationsForDomainBoundaries(
+                    exactDomains = verifiedNat64Scope.exactDomains,
+                    suffixDomains = verifiedNat64Scope.suffixDomains,
+                )
+            } else {
+                snapshot.candidateDestinationsForDomains(nat64FallbackDomainsProvider())
+            }
+            destinations
+                .filterTo(LinkedHashSet()) { it.endsWith("/128") }
+        } else {
+            emptySet()
+        }
         return FirewallRules(
             selfUid = selfUid,
             scopeUids = effectiveScope,
@@ -672,6 +733,8 @@ class BackendManager @JvmOverloads constructor(
             useIpSet = capabilities.ipset,
             rejectUdp443 = capabilities.rejectTarget,
             rejectIpv6Udp443 = capabilities.ipv6RejectTarget,
+            nat64Ipv6FallbackDestinations = nat64Ipv6Fallback,
+            enableIpv6UidPolicyFallback = nat64Ipv6Fallback.isNotEmpty(),
             generation = snapshot.generation,
         )
     }
@@ -726,6 +789,19 @@ class BackendManager @JvmOverloads constructor(
                     onRootPrepare = {
                         DirectEngine.ensureInit(ctx, true)
                         (DirectEngine.binder() as? org.xiyu.githubdirect.vpn.VpnNetworkBinder)?.start()
+                    },
+                    nat64VerifiedScopeProvider = {
+                        val plan = TlsTerminationRouteRegistry.snapshot()
+                        val routes = plan.routes.filter { it.nat64Prefix != null }
+                        VerifiedNat64RouteScope(
+                            generation = plan.generation,
+                            exactDomains = routes.asSequence()
+                                .filterNot { it.includeSubdomains }
+                                .mapTo(LinkedHashSet()) { it.domain },
+                            suffixDomains = routes.asSequence()
+                                .filter { it.includeSubdomains }
+                                .mapTo(LinkedHashSet()) { it.domain },
+                        )
                     },
                 )
                 instance = manager

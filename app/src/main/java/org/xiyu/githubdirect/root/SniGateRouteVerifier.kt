@@ -174,6 +174,8 @@ class SniGateRouteVerifier(
     }
 
     companion object {
+        // 实机上提高到 8 会让移动网络/SNI-Gate 过载并降低验证通过率；保持 4 路，
+        // 由每路超时和全局硬截止提供边界。
         private const val MAX_WORKERS = 4
         private const val ROUTE_TIMEOUT_MS = 8_000
         private const val GLOBAL_TIMEOUT_MS = 35_000L

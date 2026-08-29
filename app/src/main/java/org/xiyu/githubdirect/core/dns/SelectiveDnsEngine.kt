@@ -35,6 +35,11 @@ class SelectiveDnsEngine @JvmOverloads constructor(
     private val plain: PlainDnsClient,
     /** 额外 raw 上游（TCP/53 变体，可注入便于测试）。 */
     private val rawUpstreamTcp: (ByteArray) -> ByteArray? = { raw -> plain.queryTcp(raw) },
+    /**
+     * 已经通过出口与 TLS 路由验证的 NAT64 域名边界。仅在运行时路由实际发布后返回 true，
+     * 使受管 DNS 客户端回落到 A/vIP 数据面；默认关闭，不改变 VPN/普通解析行为。
+     */
+    private val suppressIpv6ForVerifiedNat64: (String) -> Boolean = { false },
 ) {
 
     private val dnsTtlSec = 300
@@ -63,8 +68,13 @@ class SelectiveDnsEngine @JvmOverloads constructor(
             return DnsPacketCodec.buildNxdomainResponse(raw)
         }
 
-        // AAAA 抑制（profile/规则级 flag）→ NODATA，绝不 NXDOMAIN
-        if (policy.aaaaSuppress && question.qtype == 28) {
+        // 静态规则或已验证并已发布的 NAT64 路由要求 AAAA 回落 → NODATA，绝不 NXDOMAIN。
+        // 后者按当前真实查询域名匹配规则边界，可覆盖页面运行时出现的新子域；路由清空时
+        // 回调同步失效，避免把未验证/已停止的第三方出口继续留在 DNS 决策中。
+        if (
+            question.qtype == 28 &&
+            (policy.aaaaSuppress || suppressIpv6ForVerifiedNat64(domain))
+        ) {
             return DnsPacketCodec.buildNodataResponse(raw, question.questionEnd)
         }
 

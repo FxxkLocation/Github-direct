@@ -29,6 +29,7 @@ class RouteSnapshotTest {
                             "github.com", "199.59.148.9", CandidateSource.LOCAL_DNS,
                             now, now + 60_000, 0, RouteCapability.UNUSABLE, interceptOnly = true,
                             lastError = "SocketTimeoutException:\r\n read timed out",
+                            failureStage = CandidateFailureStage.TCP_CONNECT,
                         ),
                     ),
                 ),
@@ -48,6 +49,12 @@ class RouteSnapshotTest {
             decoded.plans.getValue("github.com").candidates
                 .single { it.address == "199.59.148.9" }
                 .lastError,
+        )
+        assertEquals(
+            CandidateFailureStage.TCP_CONNECT,
+            decoded.plans.getValue("github.com").candidates
+                .single { it.address == "199.59.148.9" }
+                .failureStage,
         )
     }
 
