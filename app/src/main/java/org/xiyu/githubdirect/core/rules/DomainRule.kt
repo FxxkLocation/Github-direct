@@ -14,7 +14,8 @@ import org.xiyu.githubdirect.core.dns.CidrFilter
  * - fixedIp      : 固定真实 IP（解析后优先使用，不再 DoH）
  * - endpointGroup: SNI/原目的 IP 唯一归类使用的稳定端点组
  * - cidrRef      : 动态 CIDR 集合引用；旧的内联 [cidr] 继续兼容
- * - candidatePool: 允许同 endpointGroup 共享“已验证 IP 种子”；每个目标域仍须独立 TLS 验证
+ * - candidatePool: 声明 CDN/运营方候选池，不直接共享验证结论
+ * - candidatePoolScope: 显式允许跨 endpointGroup 共享已验证 IP 种子；缺省时仍以 endpointGroup 隔离
  * - echConfigDomain: 可选 ECH 公共配置名；只声明预检策略，不携带固定上游地址
  * - nat64FallbackEligible: 该规则是否允许进入用户显式开启的第三方 NAT64 ECH 兜底
  * - semanticProbe: 可选 HTTPS 业务探测；避免证书兼容但虚拟主机返回错误内容的 CDN 地址
@@ -34,6 +35,7 @@ data class DomainRule(
     val echConfigDomain: String? = null,
     val nat64FallbackEligible: Boolean = false,
     val semanticProbe: HttpSemanticProbePolicy? = null,
+    val candidatePoolScope: String? = null,
 )
 
 /**
@@ -46,6 +48,9 @@ class HttpSemanticProbePolicy private constructor(
     val statusMax: Int,
 ) {
     fun accepts(status: Int): Boolean = status in statusMin..statusMax
+
+    /** 持久化候选的语义验证版本；路径或状态边界变更会自动使旧结论失效。 */
+    fun verificationSignature(): String = "v1:$statusMin:$statusMax:$path"
 
     companion object {
         fun create(path: String, statusMin: Int, statusMax: Int): HttpSemanticProbePolicy? {

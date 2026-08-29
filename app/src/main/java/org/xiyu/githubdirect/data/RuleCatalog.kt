@@ -129,6 +129,7 @@ object RuleCatalog {
         val endpointGroup = safeReference(obj.optString("endpointGroup"))
         val cidrRef = safeReference(obj.optString("cidrRef"))
         val candidatePool = safeReference(obj.optString("candidatePool"))
+        val candidatePoolScope = safeReference(obj.optString("candidatePoolScope"))
         val echConfigDomain = DnsNames.normalize(obj.optString("echConfigDomain"))
         val nat64FallbackEligible = obj.optBoolean("nat64FallbackEligible", false)
         val semanticProbe = parseSemanticProbe(obj.optJSONObject("semanticProbe"))
@@ -148,6 +149,7 @@ object RuleCatalog {
             echConfigDomain = echConfigDomain,
             nat64FallbackEligible = nat64FallbackEligible,
             semanticProbe = semanticProbe,
+            candidatePoolScope = candidatePoolScope,
         )
     }
 

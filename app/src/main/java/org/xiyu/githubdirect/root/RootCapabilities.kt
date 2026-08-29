@@ -27,6 +27,11 @@ data class RootCapabilities(
     val rejectTarget: Boolean = false,
     /** ip6tables 的 REJECT target；与 IPv4 分开探测，避免 IPv6 restore 因 target 缺失失败。 */
     val ipv6RejectTarget: Boolean = false,
+    /**
+     * `ip -6 rule uidrange` + 独立路由表能力。用于设备缺少 ip6tables 数据面时，
+     * 仅让所选 UID 对已授权 OpenAI AAAA 快速回退到 IPv4/NAT64。
+     */
+    val ipv6UidPolicyRouting: Boolean = false,
 ) {
     fun requiredOk(): Boolean =
         suAvailable && uid > 0 && iptables && iptablesSave && iptablesRestore &&
@@ -168,6 +173,7 @@ class RootCapabilityProbe(
                 REJECT_PROBE_CHAIN_V6,
                 "-p udp --dport 443 -j REJECT --reject-with icmp6-port-unreachable",
             ))
+        val ipv6UidPolicyRouting = suAvailable && appUid > 0 && probeIpv6UidPolicyRouting()
         val selinux = runShell("getenforce")
         val selinuxEnforcing = containsIgnoreCase(selinux.text(), "Enforcing")
 
@@ -187,7 +193,40 @@ class RootCapabilityProbe(
             ipset = ipset,
             rejectTarget = rejectTarget,
             ipv6RejectTarget = ipv6RejectTarget,
+            ipv6UidPolicyRouting = ipv6UidPolicyRouting,
         )
+    }
+
+    /**
+     * 在文档保留地址上做一次不可达策略探测；规则只匹配应用 UID 与单个 /128，且无真实
+     * 业务流量会使用该目标。finally 精确删除本次规则和路由，不触碰 Android 路由表。
+     */
+    private fun probeIpv6UidPolicyRouting(): Boolean {
+        val route =
+            "ip -6 route add unreachable $POLICY_PROBE_DESTINATION table $POLICY_PROBE_TABLE"
+        val rule =
+            "ip -6 rule add priority $POLICY_PROBE_PRIORITY uidrange $appUid-$appUid " +
+                "to $POLICY_PROBE_DESTINATION lookup $POLICY_PROBE_TABLE"
+        cleanupIpv6UidPolicyProbe()
+        val installed = try {
+            shell.execStrict(route, rule, timeoutSec = 8).ok
+        } catch (_: Throwable) {
+            false
+        } finally {
+            cleanupIpv6UidPolicyProbe()
+        }
+        return installed
+    }
+
+    private fun cleanupIpv6UidPolicyProbe() {
+        runCatching {
+            shell.exec(
+                "ip -6 rule del priority $POLICY_PROBE_PRIORITY uidrange $appUid-$appUid " +
+                    "to $POLICY_PROBE_DESTINATION lookup $POLICY_PROBE_TABLE",
+                "ip -6 route del unreachable $POLICY_PROBE_DESTINATION table $POLICY_PROBE_TABLE",
+                timeoutSec = 5,
+            )
+        }
     }
 
     private fun probeOwnerMatch(binary: String, chain: String): Boolean {
@@ -302,6 +341,9 @@ class RootCapabilityProbe(
         private const val REDIRECT_PROBE_CHAIN_V6 = "GHD_PROBE_REDIR6"
         private const val REJECT_PROBE_CHAIN = "GHD_PROBE_REJECT"
         private const val REJECT_PROBE_CHAIN_V6 = "GHD_PROBE_REJECT6"
+        private const val POLICY_PROBE_DESTINATION = "2001:db8::1/128"
+        private const val POLICY_PROBE_TABLE = 52999
+        private const val POLICY_PROBE_PRIORITY = 10998
         private val MISSING_MARKERS = listOf(
             "not found",
             "no such",

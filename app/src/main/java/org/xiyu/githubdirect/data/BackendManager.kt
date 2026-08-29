@@ -18,6 +18,7 @@ import org.xiyu.githubdirect.root.RootBackendFailure
 import org.xiyu.githubdirect.root.RootCapabilities
 import org.xiyu.githubdirect.root.RootCapabilityProbe
 import org.xiyu.githubdirect.root.RootShell
+import org.xiyu.githubdirect.root.TlsTerminationRouteRegistry
 import org.xiyu.githubdirect.root.TransparentDnsListener
 import org.xiyu.githubdirect.root.TransparentTcpListener
 import org.xiyu.githubdirect.root.OriginalDestination
@@ -39,6 +40,10 @@ interface RootBackendControl {
     val realIpRedirectActive: Boolean get() = false
 
     val ipv6RealIpRedirectActive: Boolean get() = false
+
+    val nat64Ipv6FallbackActive: Boolean get() = false
+
+    val nat64Ipv6FallbackDestinationCount: Int get() = 0
 
     val fullTlsCaptureUidCount: Int get() = 0
 
@@ -96,6 +101,9 @@ class RootBackendAdapter(
     override val activeGeneration: Long get() = backend.activeGeneration
     override val realIpRedirectActive: Boolean get() = backend.realIpRedirectActive
     override val ipv6RealIpRedirectActive: Boolean get() = backend.ipv6RealIpRedirectActive
+    override val nat64Ipv6FallbackActive: Boolean get() = backend.nat64Ipv6FallbackActive
+    override val nat64Ipv6FallbackDestinationCount: Int
+        get() = backend.nat64Ipv6FallbackDestinationCount
     override val fullTlsCaptureUidCount: Int get() = backend.fullTlsCaptureUidCount
     override val ipSetLeaseActive: Boolean get() = backend.ipSetLeaseActive
     override val failOpenGuardianActive: Boolean get() = backend.failOpenGuardianActive
@@ -199,6 +207,12 @@ class BackendManager @JvmOverloads constructor(
     private val onRootPrepare: () -> Unit = {},
     private val routeSnapshotProvider: () -> RouteSnapshot = { DirectEngine.routeSnapshot() },
     private val originalDestinationAvailable: () -> Boolean = OriginalDestination::available,
+    private val nat64FallbackDomainsProvider: () -> Set<String> = {
+        DirectEngine.enabledNat64FallbackDomains()
+    },
+    private val nat64FallbackActiveProvider: () -> Boolean = {
+        TlsTerminationRouteRegistry.snapshot().routes.any { it.nat64Prefix != null }
+    },
 ) {
 
     @Volatile
@@ -275,6 +289,11 @@ class BackendManager @JvmOverloads constructor(
     fun realIpRedirectActive(): Boolean = rootBackend?.realIpRedirectActive == true
 
     fun ipv6RealIpRedirectActive(): Boolean = rootBackend?.ipv6RealIpRedirectActive == true
+
+    fun nat64Ipv6FallbackActive(): Boolean = rootBackend?.nat64Ipv6FallbackActive == true
+
+    fun nat64Ipv6FallbackDestinationCount(): Int =
+        rootBackend?.nat64Ipv6FallbackDestinationCount ?: 0
 
     fun fullTlsCaptureUidCount(): Int = rootBackend?.fullTlsCaptureUidCount ?: 0
 
@@ -661,6 +680,17 @@ class BackendManager @JvmOverloads constructor(
             AppScopeMode.EXCLUDED_APPS -> uids.take(FirewallRules.MAX_EXCLUDED_UIDS).toSet()
             AppScopeMode.SELECTED_APPS -> uids.take(MAX_SELECTED_UIDS).toSet()
         }
+        val nat64Ipv6Fallback = if (
+            mode == AppScopeMode.SELECTED_APPS && enableRealRedirect &&
+            capabilities.ipv6UidPolicyRouting && !capabilities.ipv6Netfilter &&
+            settings.nat64FallbackConfig().activationOrNull() != null &&
+            nat64FallbackActiveProvider()
+        ) {
+            snapshot.candidateDestinationsForDomains(nat64FallbackDomainsProvider())
+                .filterTo(LinkedHashSet()) { it.endsWith("/128") }
+        } else {
+            emptySet()
+        }
         return FirewallRules(
             selfUid = selfUid,
             scopeUids = effectiveScope,
@@ -672,6 +702,8 @@ class BackendManager @JvmOverloads constructor(
             useIpSet = capabilities.ipset,
             rejectUdp443 = capabilities.rejectTarget,
             rejectIpv6Udp443 = capabilities.ipv6RejectTarget,
+            nat64Ipv6FallbackDestinations = nat64Ipv6Fallback,
+            enableIpv6UidPolicyFallback = nat64Ipv6Fallback.isNotEmpty(),
             generation = snapshot.generation,
         )
     }

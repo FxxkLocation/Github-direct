@@ -486,8 +486,11 @@ class GithubHostsProvider(
         // 已验证历史先进入，保证无网络启动与刷新失败时仍可工作。
         base.planFor(target.domain)?.candidates.orEmpty()
             // v1 的宽 google-edge 池曾把仅证书兼容、应用后端不兼容的地址跨组发布。
-            // 新配置中没有同 pool+endpointGroup 伙伴时，立即淘汰这类池历史，不能等 24h TTL。
+            // 新配置中没有同 pool+verificationScope 伙伴或跨组语义锚点时，
+            // 立即淘汰这类池历史，不能等 24h TTL。
             .filter { it.source != CandidateSource.CANDIDATE_POOL || retainPooledHistory }
+            // 语义策略新增/变更后，旧候选只能等待实时来源重新发现并探测。
+            .filter(target::matchesSemanticPolicy)
             .take(MAX_CANDIDATES_PER_DOMAIN)
             .forEach { candidate ->
                 add(
@@ -578,6 +581,7 @@ class GithubHostsProvider(
     ): List<Seed> {
         val requireNoSniProbe = store?.isTlsTerminationEnabled() == true
         val queues = plans.map { plan ->
+            val requiredSemanticSignature = plan.target.semanticProbe?.verificationSignature()
             plan.seeds.asSequence()
                 .filter(Seed::upstreamEligible)
                 .filter { seed ->
@@ -587,6 +591,7 @@ class GithubHostsProvider(
                         networkKey,
                         forceProbe,
                         requireNoSniProbe,
+                        requiredSemanticSignature,
                     )
                 }
                 .sortedWith(
@@ -606,7 +611,10 @@ class GithubHostsProvider(
             queues[index].isNotEmpty() && (
                 queues[index].any(Seed::poolShared) ||
                     plans[index].seeds.none { seed ->
-                        seed.upstreamEligible && seed.previous?.usable(now) == true
+                        seed.upstreamEligible && seed.previous?.let { previous ->
+                            previous.usable(now) &&
+                                plans[index].target.matchesSemanticPolicy(previous)
+                        } == true
                     }
                 )
         }
@@ -677,6 +685,10 @@ class GithubHostsProvider(
                         noSniProbed = result.noSniProbed,
                         lastError = result.error,
                         failureStage = result.failureStage,
+                        // capability/interceptOnly 表示语义是否成功；签名也写入失败结果，
+                        // 使相同策略继续遵守退避，而策略变化仍可立即触发一次新探测。
+                        semanticProbeSignature =
+                            seed.target.semanticProbe?.verificationSignature().orEmpty(),
                     )
                 }
             }
@@ -704,14 +716,18 @@ class GithubHostsProvider(
                 continue
             }
             val previous = seed.previous
-            val carried = if (seed.upstreamEligible) {
+            val previousSemanticProofValid = previous?.let(
+                plan.target::matchesSemanticPolicy,
+            ) == true
+            val carried = if (seed.upstreamEligible && previousSemanticProofValid) {
                 carryVerifiedCandidateAcrossNetwork(previous, now, networkKey)
             } else {
                 null
             }
             if (
                 seed.upstreamEligible && previous != null &&
-                previous.networkKey == networkKey && previous.usable(now)
+                previousSemanticProofValid && previous.networkKey == networkKey &&
+                previous.usable(now)
             ) {
                 final[seed.address] = previous
             } else if (carried != null) {
@@ -752,7 +768,8 @@ class GithubHostsProvider(
                 .mapNotNull { it.previous }
                 .filter {
                     it.networkKey == networkKey &&
-                        it.capability != RouteCapability.UNUSABLE && !it.interceptOnly
+                        it.capability != RouteCapability.UNUSABLE && !it.interceptOnly &&
+                        plan.target.matchesSemanticPolicy(it)
                 }
                 .take(3)
                 .forEach { previous -> final[previous.address] = previous.copy(source = CandidateSource.HISTORICAL) }
@@ -1166,8 +1183,13 @@ class GithubHostsProvider(
             networkKey: String,
             forceProbe: Boolean,
             requireNoSniProbe: Boolean = false,
+            requiredSemanticSignature: String? = null,
         ): Boolean {
             if (forceProbe || previous == null || previous.networkKey != networkKey) return true
+            if (
+                requiredSemanticSignature != null &&
+                previous.semanticProbeSignature != requiredSemanticSignature
+            ) return true
             if (now < previous.backoffUntil) return false
             if (requireNoSniProbe && previous.usable(now) && !previous.noSniProbed) return true
             return previous.interceptOnly || previous.capability == RouteCapability.UNUSABLE ||

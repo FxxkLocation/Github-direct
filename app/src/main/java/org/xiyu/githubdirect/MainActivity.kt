@@ -383,6 +383,9 @@ class MainActivity : Activity(), App.ServiceStateListener {
                 append("\n本机 TLS 终止：${if (serviceStatus.tlsTerminationActive) "ACTIVE" else "未激活"} · 路由 ${serviceStatus.tlsTerminationRoutes} · CA ${serviceStatus.caState}")
                 if (serviceStatus.nat64FallbackActive) {
                     append("\nNON_STRICT_NAT64：ACTIVE · 路由 ${serviceStatus.nat64FallbackRoutes}")
+                    if (serviceStatus.nat64Ipv6FallbackDestinations > 0) {
+                        append(" · IPv6 UID 回落 ${serviceStatus.nat64Ipv6FallbackDestinations}")
+                    }
                     append(" · ${serviceStatus.nat64Operator} · 预期 ${serviceStatus.nat64ExpectedAsn}/${serviceStatus.nat64ExpectedRegion}")
                     if (serviceStatus.nat64Verified) {
                         append(

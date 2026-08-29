@@ -5,9 +5,10 @@ import org.xiyu.githubdirect.core.dns.IpAddresses
 /**
  * 从上一代安全快照生成受控的同后端候选种子。
  *
- * [AdaptiveRouteTarget.candidatePool] 只声明 CDN/运营方池，[AdaptiveRouteTarget.endpointGroup]
- * 进一步声明应用后端。两者必须同时相同才允许共享 IP：同一证书覆盖多个域并不代表 HTTP
- * 虚拟主机可互换。这里仍只共享 IP，不共享源域的 TLS 验证结论；调用方必须使用目标域
+ * [AdaptiveRouteTarget.candidatePool] 声明 CDN/运营方池，[AdaptiveRouteTarget.candidatePoolScope]
+ * 显式声明可以跨 endpointGroup 共享的已验证种子边界；缺省仍回退到 endpointGroup。
+ * 同一证书覆盖多个域并不代表 HTTP 虚拟主机可互换。这里只共享 IP，不共享源域的
+ * TLS 验证结论；调用方必须使用目标域
  * 真实主机名、系统信任链再次探测后才能发布。观察型/本机 DNS、过期、intercept-only
  * 和失败候选均不会进入池，因此该机制不是网段扫描或证书绕过。
  */
@@ -20,12 +21,18 @@ object CandidatePoolPlanner {
     ): Map<String, List<String>> {
         val result = LinkedHashMap<String, List<String>>()
         scopedMembers(targets)
-            .toSortedMap(compareBy<PoolScope> { it.pool }.thenBy { it.endpointGroup })
+            .toSortedMap(compareBy<PoolScope> { it.pool }.thenBy { it.verificationScope })
             .forEach { (_, members) ->
                 if (members.size < 2) return@forEach
-                val poolCandidates = members.asSequence()
+                val seedMembers = members.poolSeedMembers()
+                if (seedMembers.isEmpty()) return@forEach
+                val requireSemanticProof = members.crossesEndpointGroups()
+                val poolCandidates = seedMembers.asSequence()
                     .flatMap { member ->
                         snapshot.plans[member.domain]?.candidates.orEmpty().asSequence()
+                            .filter { candidate ->
+                                !requireSemanticProof || member.matchesSemanticPolicy(candidate)
+                            }
                     }
                     .filter { candidate ->
                         candidate.usable(now) && candidate.source.canSeedCandidatePool() &&
@@ -79,27 +86,45 @@ object CandidatePoolPlanner {
         return result
     }
 
-    /** 当前配置中仍有同池、同后端伙伴的目标；用于淘汰旧版本跨后端池历史。 */
+    /** 当前配置中仍有同池、同验证边界伙伴的目标；用于淘汰旧池历史。 */
     internal fun activeMemberDomains(targets: Collection<AdaptiveRouteTarget>): Set<String> =
         scopedMembers(targets).values.asSequence()
-            .filter { it.size >= 2 }
+            .filter { it.size >= 2 && it.poolSeedMembers().isNotEmpty() }
             .flatten()
             .mapTo(LinkedHashSet(), AdaptiveRouteTarget::domain)
 
     private fun scopedMembers(
         targets: Collection<AdaptiveRouteTarget>,
     ): Map<PoolScope, List<AdaptiveRouteTarget>> = targets.asSequence()
-        .filter { !it.candidatePool.isNullOrBlank() && it.endpointGroup.isNotBlank() }
+        .filter { !it.candidatePool.isNullOrBlank() && it.poolVerificationScope().isNotBlank() }
         .groupBy {
             PoolScope(
                 pool = requireNotNull(it.candidatePool),
-                endpointGroup = it.endpointGroup,
+                verificationScope = it.poolVerificationScope(),
             )
         }
 
+    private fun AdaptiveRouteTarget.poolVerificationScope(): String =
+        candidatePoolScope?.takeIf(String::isNotBlank) ?: endpointGroup
+
+    /**
+     * 跨 endpointGroup 共享时只允许带 HTTP 语义探测的成员输出种子，避免某个仅证书
+     * 兼容、但业务虚拟主机不兼容的边缘 IP 扩散到整个平台。同 endpointGroup 的旧行为
+     * 保持不变；接收方无论哪种情况都必须再次完成自身 TLS/语义验证。
+     */
+    private fun List<AdaptiveRouteTarget>.poolSeedMembers(): List<AdaptiveRouteTarget> {
+        return if (crossesEndpointGroups()) filter { it.semanticProbe != null } else this
+    }
+
+    private fun List<AdaptiveRouteTarget>.crossesEndpointGroups(): Boolean = asSequence()
+        .map(AdaptiveRouteTarget::endpointGroup)
+        .distinct()
+        .take(2)
+        .count() > 1
+
     private data class PoolScope(
         val pool: String,
-        val endpointGroup: String,
+        val verificationScope: String,
     )
 
     private fun CandidateSource.canSeedCandidatePool(): Boolean = when (this) {

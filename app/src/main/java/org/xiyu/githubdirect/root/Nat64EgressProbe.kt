@@ -18,8 +18,8 @@ import java.util.concurrent.TimeUnit
  * 第三方 NAT64 的服务端视角观测。
  *
  * [verified] 只表示本轮通过指定 /96 完成了公开 TLS、出口 IPv4、BGP origin ASN 与
- * Cloudflare 地区的交叉校验，并且 ASN/地区符合用户填写的预期；它不表示公共转换器可信，
- * 也不把该路径提升为严格直连。
+ * OpenAI auth 边缘地区的交叉校验，并且 ASN/地区符合用户填写的预期；它不表示公共
+ * 转换器可信、账号一定可用，也不把该路径提升为严格直连。
  */
 data class Nat64EgressObservation(
     val verified: Boolean = false,
@@ -45,21 +45,40 @@ internal data class Nat64Trace(
 }
 
 /**
- * 低频、fail-closed 的 NAT64 出口探测。所有 HTTP 请求都把实时 A 记录合成为用户选择的
- * /96，再由 OkHttp 的默认 TrustManager 和主机名验证完成公开 TLS；没有 TrustAll、代理或
- * 全局路由。DNS 污染最多令探测失败，不能令错误证书通过。
+ * 低频、fail-closed 的 NAT64 出口探测。OpenAI auth 使用当前路由 generation
+ * 内的可信 IPv4 种子；RIPE 元数据主机才使用实时系统 A 记录。所有 IPv4 均合成为
+ * 用户选择的 /96，再由 OkHttp 默认 TrustManager 和主机名验证完成公开 TLS；
+ * 没有 TrustAll、代理或全局路由。DNS 污染最多令探测失败，不能令错误证书通过。
  */
 class Nat64EgressProbe(
     private val systemLookup: (String) -> List<InetAddress> = { Dns.SYSTEM.lookup(it) },
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
-    fun probe(activation: Nat64FallbackActivation): Nat64EgressObservation {
+    fun probe(
+        activation: Nat64FallbackActivation,
+        trustedOpenAiIpv4Seeds: Collection<String>,
+    ): Nat64EgressObservation {
         val observedAt = clock()
         val prefix = normalizePublicNat64Prefix96(activation.prefix)
             ?: return failed(observedAt, "NAT64 /96 前缀无效")
+        val trustedOpenAiIpv4 = normalizeTrustedIpv4Candidates(trustedOpenAiIpv4Seeds)
+        if (trustedOpenAiIpv4.isEmpty()) {
+            return failed(
+                observedAt,
+                "$OPENAI_AUTH_TRACE_HOST 没有本代可信来源 IPv4 种子",
+            )
+        }
         return try {
             val client = OkHttpClient.Builder()
-                .dns(Nat64PrefixDns(prefix, systemLookup))
+                .dns(
+                    Nat64PrefixDns(
+                        prefix = prefix,
+                        systemLookup = systemLookup,
+                        pinnedIpv4ByHost = mapOf(
+                            OPENAI_AUTH_TRACE_HOST to trustedOpenAiIpv4,
+                        ),
+                    ),
+                )
                 .connectTimeout(CONNECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
                 .readTimeout(READ_TIMEOUT_MS, TimeUnit.MILLISECONDS)
                 .callTimeout(CALL_TIMEOUT_MS, TimeUnit.MILLISECONDS)
@@ -68,8 +87,8 @@ class Nat64EgressProbe(
                 .protocols(listOf(Protocol.HTTP_1_1))
                 .build()
 
-            val trace = parseNat64Trace(get(client, CLOUDFLARE_TRACE_URL, MAX_TRACE_CHARS))
-                ?: return failed(observedAt, "Cloudflare 出口回显格式无效")
+            val trace = parseNat64Trace(get(client, OPENAI_AUTH_TRACE_URL, MAX_TRACE_CHARS))
+                ?: return failed(observedAt, "OpenAI auth 边缘出口回显格式无效")
             val asn = parseRipeOriginAsn(
                 get(
                     client,
@@ -90,6 +109,9 @@ class Nat64EgressProbe(
                 if (!asn.equals(activation.expectedAsn, ignoreCase = true)) {
                     add("ASN 不符：预期 ${activation.expectedAsn}，实测 $asn")
                 }
+                if (!nat64OperatorMatches(activation.operator, holder)) {
+                    add("运营主体不符：预期 ${activation.operator}，实测 $holder")
+                }
                 when {
                     expectedRegion == null -> add("预期地区必须包含两位 ISO 国家/地区代码")
                     trace.regionCode != expectedRegion ->
@@ -104,7 +126,7 @@ class Nat64EgressProbe(
                 region = trace.region,
                 observedAt = observedAt,
                 detail = if (mismatches.isEmpty()) {
-                    "已通过指定 /96 实测 HTTPS 出口、BGP ASN 与地区"
+                    "已通过指定 /96 实测 OpenAI auth HTTPS 边缘、BGP ASN 与地区"
                 } else {
                     mismatches.joinToString("；")
                 },
@@ -136,7 +158,8 @@ class Nat64EgressProbe(
     )
 
     companion object {
-        private const val CLOUDFLARE_TRACE_URL = "https://www.cloudflare.com/cdn-cgi/trace"
+        internal const val OPENAI_AUTH_TRACE_HOST = "auth.openai.com"
+        private const val OPENAI_AUTH_TRACE_URL = "https://auth.openai.com/cdn-cgi/trace"
         private const val RIPE_NETWORK_INFO_URL =
             "https://stat.ripe.net/data/network-info/data.json?resource="
         private const val RIPE_AS_OVERVIEW_URL =
@@ -153,16 +176,26 @@ class Nat64EgressProbe(
 private class Nat64PrefixDns(
     prefix: String,
     private val systemLookup: (String) -> List<InetAddress>,
+    pinnedIpv4ByHost: Map<String, List<ByteArray>> = emptyMap(),
 ) : Dns {
     private val prefixBytes = checkNotNull(
         IpAddresses.parseIpv6(prefix.substringBefore('/')),
     )
+    private val pinnedIpv4ByHost = pinnedIpv4ByHost.mapKeys { (host, _) ->
+        host.lowercase(Locale.US)
+    }
 
     override fun lookup(hostname: String): List<InetAddress> {
-        val synthesized = systemLookup(hostname).asSequence()
-            .map(InetAddress::getAddress)
+        val normalizedHost = hostname.lowercase(Locale.US)
+        val pinned = pinnedIpv4ByHost[normalizedHost]
+        val ipv4Source = if (pinned != null) {
+            pinned.asSequence()
+        } else {
+            systemLookup(hostname).asSequence().map(InetAddress::getAddress)
+        }
+        val synthesized = ipv4Source
             .filter { it.size == 4 && !IpAddresses.isBogonOrPoisoned(it) }
-            .distinctBy { it.joinToString(":") }
+            .distinctBy(IpAddresses::ipv4ToString)
             .take(MAX_SYNTHESIZED_ADDRESSES)
             .map { ipv4 ->
                 val bytes = prefixBytes.copyOf()
@@ -180,6 +213,14 @@ private class Nat64PrefixDns(
         private const val MAX_SYNTHESIZED_ADDRESSES = 4
     }
 }
+
+private fun normalizeTrustedIpv4Candidates(raw: Collection<String>): List<ByteArray> = raw
+    .asSequence()
+    .mapNotNull(IpAddresses::parseIpv4)
+    .filterNot(IpAddresses::isBogonOrPoisoned)
+    .distinctBy(IpAddresses::ipv4ToString)
+    .take(4)
+    .toList()
 
 internal fun synthesizeNat64Address(prefix: String, ipv4: String): InetAddress? {
     val normalized = normalizePublicNat64Prefix96(prefix) ?: return null
@@ -231,6 +272,43 @@ internal fun expectedNat64RegionCode(raw: String): String? =
         ?.groupValues
         ?.get(1)
         ?.uppercase(Locale.US)
+
+/**
+ * [Nat64FallbackActivation.operator] 是用户声明的预期 BGP 运营主体关键词；RIPE holder
+ * 可能附带 LLC/Inc/Network 等法律或行业后缀，因此只比较去除通用词后的有意义 token。
+ */
+internal fun nat64OperatorMatches(expected: String, observed: String): Boolean {
+    val expectedTokens = nat64OperatorTokens(expected)
+    if (expectedTokens.isEmpty()) return false
+    val observedTokens = nat64OperatorTokens(observed)
+    return observedTokens.isNotEmpty() && expectedTokens.all(observedTokens::contains)
+}
+
+private fun nat64OperatorTokens(raw: String): Set<String> = OPERATOR_TOKEN.findAll(
+    raw.lowercase(Locale.US),
+).map(MatchResult::value)
+    .filter { it.length >= 2 && it !in GENERIC_OPERATOR_TOKENS }
+    .toCollection(LinkedHashSet())
+
+private val OPERATOR_TOKEN = Regex("[\\p{L}\\p{N}]+")
+private val GENERIC_OPERATOR_TOKENS = setOf(
+    "as",
+    "asn",
+    "co",
+    "company",
+    "corp",
+    "corporation",
+    "inc",
+    "limited",
+    "llc",
+    "ltd",
+    "nat64",
+    "network",
+    "networks",
+    "provider",
+    "service",
+    "services",
+)
 
 private fun readBounded(reader: Reader, maxChars: Int): String {
     require(maxChars > 0)

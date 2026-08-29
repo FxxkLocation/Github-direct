@@ -81,6 +81,7 @@ class RootRelayService : Service() {
         val tlsTerminationRoutes: Int = 0,
         val nat64FallbackActive: Boolean = false,
         val nat64FallbackRoutes: Int = 0,
+        val nat64Ipv6FallbackDestinations: Int = 0,
         val nat64Operator: String = "",
         val nat64ExpectedAsn: String = "",
         val nat64ExpectedRegion: String = "",
@@ -544,13 +545,28 @@ class RootRelayService : Service() {
         manager: BackendManager,
         forceTlsVerification: Boolean = false,
         operation: () -> Boolean,
-    ): RootDataPlaneTransactionResult = runRootDataPlaneTransaction(
-        withBarrier = { action -> DirectEngine.withRouteSnapshotBarrier(action) },
-        syncTlsTermination = { syncTlsTermination(forceTlsVerification) },
-        operation = operation,
-        isBackendActive = manager::isRootBackendActive,
-        activateSnapshot = { activateInstalledSnapshot(manager) },
-    )
+    ): RootDataPlaneTransactionResult {
+        // 路由验证可能先于 iptables/vIP 事务完成。事务窗口内先恢复原生 AAAA，只有
+        // Root 数据面实际 ACTIVE 后才允许已验证 NAT64 scope 驱动 DNS 回落。
+        DirectEngine.setVerifiedNat64DnsDataPlaneReady(false)
+        val result = runRootDataPlaneTransaction(
+            withBarrier = { action -> DirectEngine.withRouteSnapshotBarrier(action) },
+            syncTlsTermination = { syncTlsTermination(forceTlsVerification) },
+            operation = {
+                val ok = operation()
+                DirectEngine.setVerifiedNat64DnsDataPlaneReady(
+                    ok && manager.isRootBackendActive(),
+                )
+                ok
+            },
+            isBackendActive = manager::isRootBackendActive,
+            activateSnapshot = { activateInstalledSnapshot(manager) },
+        )
+        if (!result.backendActive || !result.snapshotActivated) {
+            DirectEngine.setVerifiedNat64DnsDataPlaneReady(false)
+        }
+        return result
+    }
 
     private fun publish(
         phase: Phase,
@@ -570,6 +586,8 @@ class RootRelayService : Service() {
         val embeddedCapture = manager?.embeddedCaptureUids().orEmpty().sorted()
         val realIp = manager?.realIpRedirectActive() == true
         val realIpV6 = manager?.ipv6RealIpRedirectActive() == true
+        val nat64Ipv6FallbackDestinations =
+            manager?.nat64Ipv6FallbackDestinationCount()?.coerceAtLeast(0) ?: 0
         val guardian = manager?.failOpenGuardianActive() == true
         val unclassified = manager?.unclassifiedTlsTotal() ?: 0L
         val routeDegradation = DirectEngine.routeDegradationReason()
@@ -591,6 +609,10 @@ class RootRelayService : Service() {
                     )
                     tlsRuntimeStatus.nat64RouteCount == 0 -> add(
                         "NON_STRICT_NAT64 出口已验证，但没有 OpenAI/ChatGPT 路由通过 ECH/证书预检",
+                    )
+                    !realIpV6 && nat64Ipv6FallbackDestinations == 0 -> add(
+                        "NON_STRICT_NAT64 已发布，受管 DNS 已动态回落；" +
+                            "但绕过受管 DNS 的 AAAA 没有精确 IPv6 UID 兜底",
                     )
                 }
             }
@@ -626,6 +648,7 @@ class RootRelayService : Service() {
             .putInt(KEY_TLS_TERMINATION_ROUTES, tlsRuntimeStatus.routeCount)
             .putBoolean(KEY_NAT64_FALLBACK_ACTIVE, tlsRuntimeStatus.nat64RouteCount > 0)
             .putInt(KEY_NAT64_FALLBACK_ROUTES, tlsRuntimeStatus.nat64RouteCount)
+            .putInt(KEY_NAT64_IPV6_FALLBACK_DESTINATIONS, nat64Ipv6FallbackDestinations)
             .putString(KEY_NAT64_OPERATOR, tlsRuntimeStatus.nat64Operator)
             .putString(KEY_NAT64_EXPECTED_ASN, tlsRuntimeStatus.nat64ExpectedAsn)
             .putString(KEY_NAT64_EXPECTED_REGION, tlsRuntimeStatus.nat64ExpectedRegion)
@@ -776,6 +799,8 @@ class RootRelayService : Service() {
         private const val KEY_TLS_TERMINATION_ROUTES = "tls_termination_routes"
         private const val KEY_NAT64_FALLBACK_ACTIVE = "nat64_fallback_active"
         private const val KEY_NAT64_FALLBACK_ROUTES = "nat64_fallback_routes"
+        private const val KEY_NAT64_IPV6_FALLBACK_DESTINATIONS =
+            "nat64_ipv6_fallback_destinations"
         private const val KEY_NAT64_OPERATOR = "nat64_operator"
         private const val KEY_NAT64_EXPECTED_ASN = "nat64_expected_asn"
         private const val KEY_NAT64_EXPECTED_REGION = "nat64_expected_region"
@@ -855,6 +880,10 @@ class RootRelayService : Service() {
                 tlsTerminationRoutes = prefs.getInt(KEY_TLS_TERMINATION_ROUTES, 0).coerceAtLeast(0),
                 nat64FallbackActive = prefs.getBoolean(KEY_NAT64_FALLBACK_ACTIVE, false),
                 nat64FallbackRoutes = prefs.getInt(KEY_NAT64_FALLBACK_ROUTES, 0).coerceAtLeast(0),
+                nat64Ipv6FallbackDestinations = prefs.getInt(
+                    KEY_NAT64_IPV6_FALLBACK_DESTINATIONS,
+                    0,
+                ).coerceAtLeast(0),
                 nat64Operator = prefs.getString(KEY_NAT64_OPERATOR, "").orEmpty(),
                 nat64ExpectedAsn = prefs.getString(KEY_NAT64_EXPECTED_ASN, "").orEmpty(),
                 nat64ExpectedRegion = prefs.getString(KEY_NAT64_EXPECTED_REGION, "").orEmpty(),

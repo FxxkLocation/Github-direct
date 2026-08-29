@@ -51,6 +51,10 @@ class FirewallRules(
     private val useIpSet: Boolean = false,
     private val rejectUdp443: Boolean = false,
     private val rejectIpv6Udp443: Boolean = false,
+    /** 仅限当前安全快照中已启用 NAT64 平台域名的 AAAA；必须是精确 /128。 */
+    private val nat64Ipv6FallbackDestinations: Set<String> = emptySet(),
+    /** ip6tables 不可用时，以 `ip -6 rule uidrange` 对 SELECTED scope 做 IPv4 回落。 */
+    private val enableIpv6UidPolicyFallback: Boolean = false,
     val generation: Long = 0,
 ) {
 
@@ -62,6 +66,9 @@ class FirewallRules(
     private val captureUidsV6: List<Int>
     private val directCidrsV4: List<String>
     private val directCidrsV6: List<String>
+    private val nat64FallbackUids: List<Int>
+    private val nat64FallbackCidrsV6: List<String>
+    private val nat64PolicyTable: Int = IPV6_POLICY_TABLE_BASE + (selfUid % IPV6_POLICY_TABLE_SPAN)
 
     init {
         require(selfUid > 0) { "selfUid 必须 > 0: $selfUid" }
@@ -117,6 +124,29 @@ class FirewallRules(
                 .take(limit)
                 .toList()
         } else emptyList()
+        // 第三方 NAT64 必须保持显式、最小 scope。ALL/EXCLUDED、关闭真实 IP 接管、没有
+        // 可用 IPv4 目标或完整 IPv6 透明接管已可用时，都不得安装额外策略路由。
+        nat64FallbackUids = if (
+            enableIpv6UidPolicyFallback && mode == ScopeMode.SELECTED &&
+            enableRealIpRedirect && directCidrsV4.isNotEmpty()
+        ) {
+            uids.take(MAX_IPV6_POLICY_UIDS)
+        } else {
+            emptyList()
+        }
+        nat64FallbackCidrsV6 = if (nat64FallbackUids.isNotEmpty()) {
+            nat64Ipv6FallbackDestinations.asSequence()
+                .filter { it.endsWith("/128") && RouteSnapshotCodec.isRoutableCidr(it) }
+                .filter { cidr ->
+                    IpAddresses.parseIpAddress(cidr.substringBefore('/'))?.size == 16
+                }
+                .distinct()
+                .sorted()
+                .take(MAX_IPV6_POLICY_DESTINATIONS)
+                .toList()
+        } else {
+            emptyList()
+        }
     }
 
     // ---------- 纯换算 ----------
@@ -419,6 +449,9 @@ class FirewallRules(
     fun usesIpv6RealIpRedirect(): Boolean =
         directCidrsV6.isNotEmpty() || captureUidsV6.isNotEmpty()
 
+    fun usesNat64Ipv6Fallback(): Boolean =
+        nat64FallbackUids.isNotEmpty() && nat64FallbackCidrsV6.isNotEmpty()
+
     fun usesIpSet(): Boolean = usesIpv4IpSet() || usesIpv6IpSet()
 
     private fun usesIpv4IpSet(): Boolean = useIpSet && directCidrsV4.isNotEmpty()
@@ -428,6 +461,8 @@ class FirewallRules(
     fun directDestinationCount(): Int = directCidrsV4.size
 
     fun directIpv6DestinationCount(): Int = directCidrsV6.size
+
+    fun nat64Ipv6FallbackDestinationCount(): Int = nat64FallbackCidrsV6.size
 
     fun fullTlsCaptureUidCount(): Int = captureUids.size
 
@@ -450,8 +485,49 @@ class FirewallRules(
         useIpSet = false,
         rejectUdp443 = rejectUdp443,
         rejectIpv6Udp443 = rejectIpv6Udp443,
+        nat64Ipv6FallbackDestinations = nat64Ipv6FallbackDestinations,
+        enableIpv6UidPolicyFallback = enableIpv6UidPolicyFallback,
         generation = generation,
     )
+
+    /**
+     * 安装顺序必须先建不可达路由，再发布 UID 规则；这样任一步失败都不会把 UID 指向
+     * 空表。每个 UID 只占一条 rule，目标数只影响独立表内的 /128 路由，规模 O(U + R)。
+     */
+    fun buildNat64Ipv6FallbackInstallCommands(): List<String> {
+        if (!usesNat64Ipv6Fallback()) return emptyList()
+        return buildList {
+            nat64FallbackCidrsV6.forEach { destination ->
+                add("ip -6 route add unreachable $destination table $nat64PolicyTable")
+            }
+            nat64FallbackUids.forEachIndexed { index, uid ->
+                add(
+                    "ip -6 rule add priority ${nat64PolicyPriority(index)} " +
+                        "uidrange $uid-$uid lookup $nat64PolicyTable",
+                )
+            }
+        }
+    }
+
+    /**
+     * 只删除本模块固定优先级窗口内、同时指向本 app 专属表的 rule，再 flush 该表；避免
+     * `del table` 误删其他组件碰巧复用同一表号的规则。guardian 使用同一序列，应用死亡后
+     * 约 15 秒恢复原生 IPv6（fail-open）。
+     */
+    fun buildNat64Ipv6FallbackCleanupCommands(): List<String> = buildList {
+        repeat(MAX_IPV6_POLICY_UIDS) { index ->
+            add(
+                "ip -6 rule del priority ${nat64PolicyPriority(index)} " +
+                    "table $nat64PolicyTable",
+            )
+        }
+        add("ip -6 route flush table $nat64PolicyTable")
+    }
+
+    private fun nat64PolicyPriority(index: Int): Int {
+        require(index in 0 until MAX_IPV6_POLICY_UIDS)
+        return IPV6_POLICY_PRIORITY_BASE + index
+    }
 
     /** 安装前构造同类型临时集合并 swap；chain 始终只引用固定的 active 名称。 */
     fun buildIpSetInstallCommands(): List<String> {
@@ -568,6 +644,7 @@ class FirewallRules(
             natV6.forEach { cmds += "ip6tables -t nat -X $it" }
             filterV6.forEach { cmds += "ip6tables -t filter -X $it" }
         }
+        cmds += buildNat64Ipv6FallbackCleanupCommands()
         return cmds
     }
 
@@ -636,7 +713,22 @@ class FirewallRules(
             }
         }
         addIpv6Markers(markers)
+        addNat64Ipv6FallbackMarkers(markers)
         return markers
+    }
+
+    private fun addNat64Ipv6FallbackMarkers(markers: MutableList<String>) {
+        if (!usesNat64Ipv6Fallback()) return
+        nat64FallbackUids.firstOrNull()?.let { uid ->
+            markers += "uidrange $uid-$uid lookup $nat64PolicyTable"
+        }
+        nat64FallbackUids.lastOrNull()?.takeIf { it != nat64FallbackUids.firstOrNull() }?.let { uid ->
+            markers += "uidrange $uid-$uid lookup $nat64PolicyTable"
+        }
+        markers += "unreachable ${nat64FallbackCidrsV6.first().substringBefore('/')}"
+        nat64FallbackCidrsV6.lastOrNull()
+            ?.takeIf { it != nat64FallbackCidrsV6.first() }
+            ?.let { markers += "unreachable ${it.substringBefore('/')}" }
     }
 
     private fun addIpv6Markers(markers: MutableList<String>) {
@@ -695,6 +787,10 @@ class FirewallRules(
                 add("ip6tables -t filter -S $CHAIN_UDP_V6_SELECTED")
             }
         }
+        if (usesNat64Ipv6Fallback()) {
+            add("ip -6 rule show")
+            add("ip -6 route show table $nat64PolicyTable")
+        }
     }
 
     private fun addDirectMarkers(
@@ -749,5 +845,10 @@ class FirewallRules(
         const val IPSET_LEASE_SECONDS = 20
         const val MAX_INLINE_DESTINATIONS = 128
         const val MAX_IPSET_DESTINATIONS = 512
+        const val MAX_IPV6_POLICY_UIDS = 32
+        const val MAX_IPV6_POLICY_DESTINATIONS = 128
+        private const val IPV6_POLICY_TABLE_BASE = 52_000
+        private const val IPV6_POLICY_TABLE_SPAN = 1_000
+        private const val IPV6_POLICY_PRIORITY_BASE = 10_500
     }
 }

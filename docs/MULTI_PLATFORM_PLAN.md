@@ -29,7 +29,11 @@ GitHub 继续作为稳定回归基线；Google、YouTube、Discord、OpenAI/Chat
 
 IPv6
   ├─ 有完整 ip6tables NAT 能力 → 仅精确已知候选进入中继
-  └─ 无 IPv6 NAT 能力          → 保持系统原生直连，供可达双栈/流媒体使用
+  └─ 无 IPv6 NAT 能力          → 默认保持系统原生直连，供可达双栈/流媒体使用
+      └─ 显式 OpenAI NON_STRICT_NAT64
+         且路由已实测发布     → 受管 DNS 按已发布精确/后缀边界动态抑制 AAAA
+                                + 仅所选 UID 的当前精确 /128 兜底
+                                → 回落到 IPv4/vIP/NAT64
 ```
 
 全 TLS 捕获只允许 `SELECTED_APPS` 中经过二次选择的包，默认空集合。它不应用于 ALL/EXCLUDED scope，不接管模块自身 UID，也不会把 renderer 隔离 UID全局加入规则。
@@ -39,7 +43,7 @@ IPv6
 | 平台 | 核心路径 | IPv6 | 长连接/流媒体 | 当前状态 |
 | --- | --- | --- | --- | --- |
 | GitHub | Web/API/Raw/Assets/Release/HTTPS Git | 基线仍抑制普通 AAAA | Release/clone TCP | Android 16 + Edge IPv4 已验证 |
-| Google | `google.com`、账户、API、gstatic、1e100、gvt | 保留 AAAA | 登录/下载 | `NEEDS_VERIFY` |
+| Google | `google.com`、账户、API、gstatic/ggpht、reCAPTCHA、1e100、gvt | 保留 AAAA | 登录/下载 | `NEEDS_VERIFY` |
 | YouTube | Web、Innertube API、ytimg、动态 googlevideo | 保留 AAAA | 视频分片；IPv6可直接使用 | `NEEDS_VERIFY` |
 | Discord | API、Gateway、Remote Auth、CDN、Media | 保留 AAAA | Web/二维码 WebSocket 已验证；原生客户端与 Voice UDP/3478 待验证 | `NEEDS_VERIFY` |
 | OpenAI | API、ChatGPT、Android、Auth、静态/内容域 | 保留 AAAA | SSE/流式输出、`ws.chatgpt.com` | `NEEDS_VERIFY` |
@@ -50,11 +54,14 @@ IPv6
 
 1. GitHub：内置版本快照、官方 Meta、固定 IP Wire DoH、本机 DNS 观测、限龄社区种子。
 2. 其他平台：固定 IP Wire DoH、本机 DNS 观测、安全历史；不复用 GitHub Meta/社区种子。
-3. 新地址必须通过 TCP、目标探测名的真实 SNI、系统信任链和主机名验证，才可成为上游；显式同 CDN 池只共享 IP 种子，不共享源域的验证结论。
+3. 新地址必须通过 TCP、目标探测名的真实 SNI、系统信任链和主机名验证，才可成为上游；显式同 CDN 池只在 `candidatePoolScope` 内共享 IP 种子，不共享源域的验证结论。如果 scope 跨越多个 `endpointGroup`，只有带 HTTP 语义探测的锚点可以输出种子。
 4. 污染/探测失败地址只能进入 `interceptOnly`，禁止作为上游。
 5. 普通直连/分片候选按精确目标发布。对于证书只覆盖 `*.domain`、裸域不提供服务的动态 CDN，候选系统使用固定一层代表子域验证边缘能力；这不会生成任意新规则，也不会改写实际请求 SNI。
 6. 可选 TLS 终止只接受已启用 profile 明确声明的一方后缀。NO-SNI 固定 IP 必须先通过代表子域验证；ECH 查询目标自身 HTTPS RR，不硬编码第三方 CDN。实际连接继续按真实内层域验证公开证书，失败即关闭；未知第三方后缀不自动进入 CA 边界。
 7. 每设备 CA 的私钥仅位于应用私有目录；公开证书通过 Android 用户库和浏览器策略安装。证书锁定原生 App 不属于该路径的兼容承诺。
+8. Edge 147+ 的完整浏览器策略同时包含 CA 信任、平台 CA 集成、内置明文 DNS 与关闭 DoH；模块只修复自己拥有的值，不覆盖已有外部管理策略。这样 Google/OpenAI 查询保留 Edge UID，才能进入按应用作用域的 Root DNS。
+9. `NON_STRICT_NAT64` 只用于规则资产显式标记的 OpenAI 域。出口探测固定使用当前 generation 的可信来源 `auth.openai.com` IPv4 种子，并在 NAT64 路径重新验证公开证书/主机名，再交叉验证 OpenAI auth 边缘地区、RIPE ASN 与 holder；地区匹配不等于账号策略保证。
+10. NAT64 的动态域名适配不维护运行时精确域名清单：只有出口和 TLS 路由均验证通过、路由已发布且同代 Root IPv4/vIP 数据面 ACTIVE 后，受管 DNS 才沿该路由原有的 exact/suffix 标签边界对真实查询名返回 AAAA NODATA。启动/刷新事务、停止或失败期间保持原生 AAAA；精确 `/128` UID 策略路由仅作为绕过受管 DNS 时的有界兜底。
 
 ## 交付阶段
 
@@ -66,14 +73,21 @@ IPv6
 2. **已完成：Electron-like 宿主数据面**
    - 增加二次授权包集合与 UID 可观测状态。
    - SELECTED 共享目标链之后增加 IPv4 TCP/443 兜底；非目标原样透传。
-   - 同一宿主 IPv4 UDP/443 回退 TCP；IPv6不做无边界全捕获。
+   - 同一宿主 IPv4 UDP/443 回退 TCP；IPv6 不做无边界全捕获。
 
-3. **部分完成：当前设备验证**
+3. **实现已更新、待用户指令验证：Google 候选池、Edge DNS 与 OpenAI IPv6 回落**
+   - Google/YouTube 候选池拆分为显式 scope；Google 核心域由语义锚点动态提供待验证 IP，并补入 `*.ggpht.com` / `*.recaptcha.net` 平台根。
+   - 路由快照升级为 v2，持久化 HTTP 语义策略签名；v1 候选池历史不会被新版继承。
+   - Edge 147+ 合并 `BuiltInDnsClientEnabled=true` / `DnsOverHttpsMode=off`，使浏览器 DNS 保留宿主 UID。
+   - NAT64 出口只接受动态严格 OpenAI 候选，并验证地区/ASN/运营主体。
+   - 已发布 NAT64 路由的 exact/suffix 边界会动态驱动受管 DNS 的 AAAA NODATA；无 IPv6 netfilter 时再使用有界 `ip -6 rule uidrange` + 当前精确 /128 不可达表兜底。停止与 guardian 均精确清理。
+
+4. **部分完成：历史设备验证**
    - 安装新 APK，确认 LSPosed/Root scope 与设置迁移。
    - Edge/系统 WebView 验证宿主 UID、非目标透传与故障开放。
    - Discord Web 与二维码 Remote Auth 已在 Edge 151 验证；Google、YouTube、OpenAI 和各平台原生客户端仍待补齐。
 
-4. **待完成：平台功能矩阵**
+5. **待完成：平台功能矩阵**
    - Google 登录/账户跳转；YouTube 实际播放和续传；Discord Gateway；ChatGPT SSE/WebSocket。
    - 分别记录 IPv4/IPv6、TCP/QUIC、候选能力、iptables 计数、崩溃/ANR。
    - 补 Android 12/14、Magisk、蜂窝网络和完整 IPv6 NAT 设备。

@@ -16,9 +16,9 @@ enum class SystemCaState {
     SYSTEM_ONLY,
     /** The same DER is in user and system stores; Edge 151 rejects this duplicate layout. */
     SYSTEM_USER_CONFLICT,
-    /** Platform user trust exists, but a selected Edge 138+ profile lacks CACertificates policy. */
+    /** Platform user trust exists, but selected Edge lacks the CA + scoped-DNS policy bundle. */
     BROWSER_POLICY_REQUIRED,
-    /** Selected Edge is older than the first version supporting CACertificates on Android. */
+    /** Selected Edge predates Android support for the complete CA + DNS policy bundle. */
     BROWSER_POLICY_UNSUPPORTED,
     STAGED_REBOOT_REQUIRED,
     REMOVE_PENDING,
@@ -83,7 +83,7 @@ class AndroidSystemCaInstaller(
             return SystemCaStatus(
                 SystemCaState.ERROR,
                 ca.fingerprintSha256,
-                "Edge CA 策略检测失败：${browserPolicy.detail}",
+                "Edge CA/DNS 策略检测失败：${browserPolicy.detail}",
                 systemActive = system.systemActive,
                 userTrusted = user.present,
                 browserPolicyRequired = policyRequired,
@@ -107,16 +107,16 @@ class AndroidSystemCaInstaller(
             SystemCaState.TRUSTED ->
                 buildString {
                     append("浏览器用户信任已生效（${user.alias}，AndroidCAStore 已验证）")
-                    if (policyRequired) append("；Edge CACertificates 策略已验证")
+                    if (policyRequired) append("；Edge CA 与受管 DNS 策略已验证")
                 }
             SystemCaState.SYSTEM_ONLY ->
                 "仅系统/APEX 信任已生效；Chromium 系浏览器不会把它当作用户根"
             SystemCaState.SYSTEM_USER_CONFLICT ->
                 "用户 CA 已安装，但同一证书仍在系统/APEX 根库；需移除旧系统模块并重启"
             SystemCaState.BROWSER_POLICY_REQUIRED ->
-                "用户 CA 已安装，但所选 Edge 尚未载入 CACertificates 策略；请再次执行安装"
+                "用户 CA 已安装，但所选 Edge 尚未载入 CA/受管 DNS 策略；请再次执行安装"
             SystemCaState.BROWSER_POLICY_UNSUPPORTED ->
-                "所选 Edge 版本低于 138，不支持 Android CACertificates 策略；已阻止 TLS 终止"
+                "所选 Edge 版本低于 147，不支持完整 Android CA/DNS 策略；已阻止 TLS 终止"
             SystemCaState.STAGED_REBOOT_REQUIRED ->
                 "旧系统 CA 模块仍在暂存；切换浏览器模式前需移除并重启"
             SystemCaState.REMOVE_PENDING ->
@@ -211,7 +211,7 @@ class AndroidSystemCaInstaller(
             val failed = SystemCaStatus(
                 SystemCaState.BROWSER_POLICY_UNSUPPORTED,
                 ca.fingerprintSha256,
-                "所选 Edge 版本低于 $MIN_EDGE_POLICY_MAJOR，不支持 CACertificates 策略",
+                "所选 Edge 版本低于 $MIN_EDGE_POLICY_MAJOR，不支持完整 CA/DNS 策略",
                 userTrusted = before.userTrusted,
                 browserPolicyRequired = true,
             )
@@ -235,7 +235,7 @@ class AndroidSystemCaInstaller(
                 val failed = SystemCaStatus(
                     SystemCaState.ERROR,
                     ca.fingerprintSha256,
-                    "Edge CACertificates 策略安装失败：${policyInstall.detail}",
+                    "Edge CA/DNS 策略安装失败：${policyInstall.detail}",
                     userTrusted = true,
                     browserPolicyRequired = true,
                 )
@@ -614,7 +614,7 @@ class AndroidSystemCaInstaller(
             "org.xiyu.githubdirect.root.BrowserPolicyRootHelper"
         private const val BROWSER_POLICY_MARKER = "GHD_BROWSER_POLICY_V1"
         private const val EDGE_PACKAGE = "com.microsoft.emmx"
-        private const val MIN_EDGE_POLICY_MAJOR = 138
+        private const val MIN_EDGE_POLICY_MAJOR = 147
         const val MODULE_ID = "github_direct_ca"
         const val MODULE_DIR = "/data/adb/modules/$MODULE_ID"
         const val MODULE_STAGE_DIR = "/data/adb/modules/$MODULE_ID.staging"

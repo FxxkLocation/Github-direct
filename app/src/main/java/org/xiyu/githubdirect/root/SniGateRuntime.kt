@@ -66,6 +66,10 @@ class SniGateRuntime(
     @Volatile
     private var lastNat64Observation = Nat64EgressObservation.NONE
 
+    /** 出口观测只能在同一路由 generation 内短暂复用；网络/候选切换必须重新实测。 */
+    @Volatile
+    private var activeNat64ProbeGeneration = Long.MIN_VALUE
+
     /** 每条未通过路由独立按 1/5/30 分钟退避；显式 REPROBE 可绕过等待。 */
     private val failedRouteRetries = LinkedHashMap<TlsTerminationRoute, RouteVerificationRetry>()
 
@@ -102,22 +106,45 @@ class SniGateRuntime(
         val configuredNat64 = DirectEngine.settings()?.nat64FallbackConfig()?.activationOrNull()
         val previousNat64Activation = activeNat64Activation
         val previousNat64Observation = lastNat64Observation
+        val previousNat64ProbeGeneration = activeNat64ProbeGeneration
+        val trustedOpenAiIpv4 = snapshot.trustedIpv4ProbeSeedsFor(
+            Nat64EgressProbe.OPENAI_AUTH_TRACE_HOST,
+        )
         activeNat64Activation = configuredNat64
+        activeNat64ProbeGeneration = snapshot.generation
         lastNat64Observation = when {
             configuredNat64 == null -> Nat64EgressObservation.NONE
             eligibleNat64Domains.isEmpty() -> Nat64EgressObservation(
                 observedAt = System.currentTimeMillis(),
                 detail = "没有已启用且允许 NAT64 的 OpenAI/ChatGPT 规则",
             )
-            else -> reusableNat64Observation(
-                previousActivation = previousNat64Activation,
-                configuredActivation = configuredNat64,
-                observation = previousNat64Observation,
-                now = System.currentTimeMillis(),
-                maxAgeMs = NAT64_OBSERVATION_REUSE_MS,
-            ).takeUnless { forceVerification }?.also {
-                Log.i(TAG, "reuse verified NAT64 observation age=${System.currentTimeMillis() - it.observedAt}ms")
-            } ?: nat64EgressProbe.probe(configuredNat64)
+            trustedOpenAiIpv4.isEmpty() -> Nat64EgressObservation(
+                observedAt = System.currentTimeMillis(),
+                detail = "${Nat64EgressProbe.OPENAI_AUTH_TRACE_HOST} 没有本代可信来源 IPv4 种子",
+            )
+            else -> {
+                val reused = if (
+                    !forceVerification && previousNat64ProbeGeneration == snapshot.generation
+                ) {
+                    reusableNat64Observation(
+                        previousActivation = previousNat64Activation,
+                        configuredActivation = configuredNat64,
+                        observation = previousNat64Observation,
+                        now = System.currentTimeMillis(),
+                        maxAgeMs = NAT64_OBSERVATION_REUSE_MS,
+                    )
+                } else {
+                    null
+                }
+                reused?.also {
+                    Log.i(
+                        TAG,
+                        "reuse verified NAT64 observation " +
+                            "generation=${snapshot.generation}, " +
+                            "age=${System.currentTimeMillis() - it.observedAt}ms",
+                    )
+                } ?: nat64EgressProbe.probe(configuredNat64, trustedOpenAiIpv4)
+            }
         }
         val verifiedNat64 = configuredNat64?.takeIf { lastNat64Observation.verified }
         val plan = TlsTerminationPlanner.plan(
@@ -147,7 +174,7 @@ class SniGateRuntime(
             val reused = TlsTerminationPlan(plan.generation, decision.reusedRoutes)
             activeRequestedPlan = plan
             activePlan = reused
-            TlsTerminationRouteRegistry.publish(reused)
+            publishVerifiedRoutes(reused)
             val deferred = plan.routes.size - reused.routes.size
             Log.i(
                 TAG,
@@ -179,7 +206,7 @@ class SniGateRuntime(
         routesToVerify: List<TlsTerminationRoute> = plan.routes,
         reusedRoutes: List<TlsTerminationRoute> = emptyList(),
     ): SniGateRuntimeStatus {
-        TlsTerminationRouteRegistry.clear()
+        clearVerifiedRoutes()
         activePlan = TlsTerminationPlan.EMPTY
         activeRequestedPlan = TlsTerminationPlan.EMPTY
         val binary = try {
@@ -243,7 +270,7 @@ class SniGateRuntime(
 
         activeRequestedPlan = plan
         activePlan = publishPlan
-        if (publish) TlsTerminationRouteRegistry.publish(publishPlan)
+        if (publish) publishVerifiedRoutes(publishPlan)
         val detail = verification?.let {
             "复用 ${reusedRoutes.size} 条；本轮验证通过 ${it.plan.routes.size}/${it.attempted} 条；" +
                 "发布 ${publishPlan.routes.size}/${plan.routes.size} 条本机 TLS 终止路由"
@@ -386,7 +413,7 @@ class SniGateRuntime(
     }
 
     private fun stopInternal(clearRoutes: Boolean, clearNat64State: Boolean = clearRoutes) {
-        if (clearRoutes) TlsTerminationRouteRegistry.clear()
+        if (clearRoutes) clearVerifiedRoutes()
         stopRootProcess()
         activePlan = TlsTerminationPlan.EMPTY
         activeRequestedPlan = TlsTerminationPlan.EMPTY
@@ -394,8 +421,34 @@ class SniGateRuntime(
         if (clearNat64State) {
             activeNat64Activation = null
             lastNat64Observation = Nat64EgressObservation.NONE
+            activeNat64ProbeGeneration = Long.MIN_VALUE
         }
         lastStatus = SniGateRuntimeStatus(false)
+    }
+
+    /**
+     * 先发布本机 TLS 路由，再允许 DNS 抑制对应 AAAA；这样任何被迫走 A/vIP 的连接都
+     * 已有可用的已验证终止路由。精确与后缀边界沿用计划本身，不从实时 SNI 扩张。
+     */
+    private fun publishVerifiedRoutes(plan: TlsTerminationPlan) {
+        TlsTerminationRouteRegistry.publish(plan)
+        val nat64Routes = plan.routes.filter { it.nat64Prefix != null }
+        DirectEngine.publishVerifiedNat64DnsScope(
+            exactDomains = nat64Routes.asSequence()
+                .filterNot(TlsTerminationRoute::includeSubdomains)
+                .map(TlsTerminationRoute::domain)
+                .toList(),
+            suffixDomains = nat64Routes.asSequence()
+                .filter(TlsTerminationRoute::includeSubdomains)
+                .map(TlsTerminationRoute::domain)
+                .toList(),
+        )
+    }
+
+    /** 停止时顺序相反：先恢复 AAAA，再撤销本机 TLS 路由，保持 fail-open。 */
+    private fun clearVerifiedRoutes() {
+        DirectEngine.clearVerifiedNat64DnsScope()
+        TlsTerminationRouteRegistry.clear()
     }
 
     private fun updateRouteVerificationRetries(

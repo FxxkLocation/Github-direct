@@ -81,6 +81,28 @@ object DirectEngine {
     @Volatile
     private var providersMode = false
 
+    private data class VerifiedNat64DnsScope(
+        val exactDomains: Set<String>,
+        val suffixDomains: Set<String>,
+    ) {
+        fun contains(domain: String): Boolean =
+            domain in exactDomains || suffixDomains.any { root ->
+                domain == root || domain.endsWith(".$root")
+            }
+
+        companion object {
+            val EMPTY = VerifiedNat64DnsScope(emptySet(), emptySet())
+        }
+    }
+
+    /** 只由同进程 SNI 运行时在真实出口及 TLS 路由验证通过并发布后更新。 */
+    @Volatile
+    private var verifiedNat64DnsScope = VerifiedNat64DnsScope.EMPTY
+
+    /** Root IPv4/vIP 规则安装成功前保持 false，避免 AAAA 提前回落到尚未就绪的数据面。 */
+    @Volatile
+    private var verifiedNat64DnsDataPlaneReady = false
+
     private val providers = ConcurrentHashMap<String, HostsProvider>()
 
     /**
@@ -154,6 +176,7 @@ object DirectEngine {
                 dnsEngine = SelectiveDnsEngine(
                     reg, resolver, cache, pool, relayTable,
                     wireDoh, PlainDnsClient(),
+                    suppressIpv6ForVerifiedNat64 = ::shouldSuppressIpv6ForVerifiedNat64,
                 )
                 this.binder = binder
                 this.settings = settings
@@ -427,6 +450,40 @@ object DirectEngine {
             .mapNotNull(DnsNames::normalize)
             .filter { domain -> isRelayTransport(reg.match(domain)?.policy?.transport) }
             .toCollection(LinkedHashSet())
+    }
+
+    /**
+     * 发布已实际验证的 NAT64 DNS 边界。精确和后缀语义分别保留，禁止把单个精确路由
+     * 意外扩大为整个平台；所有输入再次规范化后以不可变快照原子替换。
+     */
+    @JvmStatic
+    fun publishVerifiedNat64DnsScope(
+        exactDomains: Collection<String>,
+        suffixDomains: Collection<String>,
+    ) {
+        verifiedNat64DnsScope = VerifiedNat64DnsScope(
+            exactDomains = exactDomains.mapNotNull(DnsNames::normalize).toSet(),
+            suffixDomains = suffixDomains.mapNotNull(DnsNames::normalize).toSet(),
+        )
+    }
+
+    /** 先恢复 AAAA 默认行为，再由 Root 运行时清空本机 TLS 路由。 */
+    @JvmStatic
+    fun clearVerifiedNat64DnsScope() {
+        verifiedNat64DnsScope = VerifiedNat64DnsScope.EMPTY
+        verifiedNat64DnsDataPlaneReady = false
+    }
+
+    /** Root 启动/刷新事务完成后才开放 DNS 回落；事务开始或失败时恢复原生 AAAA。 */
+    @JvmStatic
+    fun setVerifiedNat64DnsDataPlaneReady(ready: Boolean) {
+        verifiedNat64DnsDataPlaneReady = ready
+    }
+
+    private fun shouldSuppressIpv6ForVerifiedNat64(rawDomain: String): Boolean {
+        if (!verifiedNat64DnsDataPlaneReady) return false
+        val domain = DnsNames.normalize(rawDomain) ?: return false
+        return verifiedNat64DnsScope.contains(domain)
     }
 
     private fun isRelayTransport(transport: TransportPolicy?): Boolean = when (transport) {
