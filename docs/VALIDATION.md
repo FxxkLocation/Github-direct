@@ -143,7 +143,7 @@ $env:GHD_LIVE_TLS_PROBE='1'
 2. 启用前确认 OpenAI profile、TLS 终止、每设备 CA 与 Edge 147+ CA/DNS 策略均已生效；未满足任一前置条件时开关必须拒绝激活。
 3. 出口探测必须使用当前 generation 中来自 Wire DoH/安全历史等可信来源的 `auth.openai.com` IPv4 种子，不能再次依赖可能污染的系统答案；该种子必须在 NAT64 路径上重新通过公开证书与主机名验证，且 OpenAI auth trace 地区、RIPE origin ASN 与运营主体关键词必须同时匹配用户配置。
 4. NAT64 路由未发布、验证失败、停止或重启期间，OpenAI AAAA 必须保持默认行为；路由发布后，受管 DNS 只可按已发布 exact/suffix 标签边界动态返回 AAAA NODATA，不得扩张到 Google、YouTube、Discord 或未知第三方域。
-5. 在缺少 IPv6 netfilter 的设备上，`ip -6 rule` 只允许覆盖所选 UID，专属表只包含当前快照中已启用 OpenAI 标签域的精确 `/128`；它只作为绕过受管 DNS 的兜底，Google、YouTube、Discord 与非作用域应用不得进入该表。
+5. 在缺少 IPv6 netfilter 的设备上，`ip -6 rule` 只允许覆盖所选 UID，专属表只包含同一 generation 中实际发布 NAT64 TLS 路由的 exact/suffix 标签边界所覆盖的精确 `/128`；单条路由成功不得把其他未通过 ECH/证书预检的 OpenAI 域写入该表。它只作为绕过受管 DNS 的兜底，Google、YouTube、Discord 与非作用域应用不得进入该表。
 6. 打开 `chatgpt.com/auth/login`，只触发一次登录按钮并确认对应账户选择页出现，不实际提交账号；随后分别检查静态资源、二维码、WebSocket 与 SSE/流式响应。
 7. 地区观测匹配只记为“出口实测通过”，平台仍返回地区/账号限制时必须保留原响应并报告，不自动轮换 NAT64 供应方，也不得宣称账号策略已保证通过。
 8. 关闭 NAT64、停止服务、强杀进程与切换网络后，确认受管 DNS 已恢复 AAAA，固定优先级 UID rule 和 `52xxx` 专属表均消失；原生 IPv6 恢复且其他平台无残留影响。

@@ -169,6 +169,43 @@ data class RouteSnapshot(
     }
 
     /**
+     * 只返回实际发布路由边界覆盖的候选目标。
+     *
+     * [exactDomains] 不得扩张到子域；[suffixDomains] 才允许覆盖同一标签边界内的动态
+     * 子域。该区别用于 NAT64 IPv6 UID 回落，避免“任意一条路由已发布”时把尚未通过
+     * ECH/证书预检的平台域一并写入不可达表。
+     */
+    fun candidateDestinationsForDomainBoundaries(
+        exactDomains: Set<String>,
+        suffixDomains: Set<String>,
+        now: Long = System.currentTimeMillis(),
+    ): Set<String> {
+        val exact = exactDomains.asSequence()
+            .mapNotNull(DnsNames::normalize)
+            .toSet()
+        val suffixes = suffixDomains.asSequence()
+            .mapNotNull(DnsNames::normalize)
+            .toSet()
+        if (exact.isEmpty() && suffixes.isEmpty()) return emptySet()
+
+        val result = LinkedHashSet<String>()
+        for (plan in plans.values) {
+            val planDomain = DnsNames.normalize(plan.domain) ?: continue
+            val authorized = planDomain in exact || suffixes.any { root ->
+                planDomain == root || planDomain.endsWith(".$root")
+            }
+            if (!authorized) continue
+            for (candidate in plan.candidates) {
+                if (candidate.expiresAt > 0L && now >= candidate.expiresAt) continue
+                val raw = IpAddresses.parseIpAddress(candidate.address) ?: continue
+                if (IpAddresses.isBogonOrPoisoned(raw)) continue
+                result += candidate.address + if (raw.size == 4) "/32" else "/128"
+            }
+        }
+        return result
+    }
+
+    /**
      * 返回可用于另一条严格 TLS 路径重新验证的 IPv4 种子。
      *
      * 直连阶段的 TCP/SNI 重置不应阻止 NAT64 兜底自行完成证书验证，因此这里允许尚未过期

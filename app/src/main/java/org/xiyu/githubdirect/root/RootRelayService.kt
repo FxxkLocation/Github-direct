@@ -82,6 +82,7 @@ class RootRelayService : Service() {
         val nat64FallbackActive: Boolean = false,
         val nat64FallbackRoutes: Int = 0,
         val nat64Ipv6FallbackDestinations: Int = 0,
+        val nat64Prefix: String = "",
         val nat64Operator: String = "",
         val nat64ExpectedAsn: String = "",
         val nat64ExpectedRegion: String = "",
@@ -552,17 +553,19 @@ class RootRelayService : Service() {
         val result = runRootDataPlaneTransaction(
             withBarrier = { action -> DirectEngine.withRouteSnapshotBarrier(action) },
             syncTlsTermination = { syncTlsTermination(forceTlsVerification) },
-            operation = {
-                val ok = operation()
-                DirectEngine.setVerifiedNat64DnsDataPlaneReady(
-                    ok && manager.isRootBackendActive(),
-                )
-                ok
-            },
+            operation = operation,
             isBackendActive = manager::isRootBackendActive,
-            activateSnapshot = { activateInstalledSnapshot(manager) },
+            activateSnapshot = {
+                val activated = activateInstalledSnapshot(manager)
+                DirectEngine.setVerifiedNat64DnsDataPlaneReady(
+                    activated && manager.isRootBackendActive(),
+                )
+                activated
+            },
         )
-        if (!result.backendActive || !result.snapshotActivated) {
+        // 只有规则安装、Backend ACTIVE 与同代快照发布全部完成后才开放 AAAA 回落；
+        // 避免 operation 成功到 activateSnapshot 失败之间出现短暂错误窗口。
+        if (!result.operationOk || !result.backendActive || !result.snapshotActivated) {
             DirectEngine.setVerifiedNat64DnsDataPlaneReady(false)
         }
         return result
@@ -649,6 +652,7 @@ class RootRelayService : Service() {
             .putBoolean(KEY_NAT64_FALLBACK_ACTIVE, tlsRuntimeStatus.nat64RouteCount > 0)
             .putInt(KEY_NAT64_FALLBACK_ROUTES, tlsRuntimeStatus.nat64RouteCount)
             .putInt(KEY_NAT64_IPV6_FALLBACK_DESTINATIONS, nat64Ipv6FallbackDestinations)
+            .putString(KEY_NAT64_PREFIX, tlsRuntimeStatus.nat64Prefix)
             .putString(KEY_NAT64_OPERATOR, tlsRuntimeStatus.nat64Operator)
             .putString(KEY_NAT64_EXPECTED_ASN, tlsRuntimeStatus.nat64ExpectedAsn)
             .putString(KEY_NAT64_EXPECTED_REGION, tlsRuntimeStatus.nat64ExpectedRegion)
@@ -801,6 +805,7 @@ class RootRelayService : Service() {
         private const val KEY_NAT64_FALLBACK_ROUTES = "nat64_fallback_routes"
         private const val KEY_NAT64_IPV6_FALLBACK_DESTINATIONS =
             "nat64_ipv6_fallback_destinations"
+        private const val KEY_NAT64_PREFIX = "nat64_prefix"
         private const val KEY_NAT64_OPERATOR = "nat64_operator"
         private const val KEY_NAT64_EXPECTED_ASN = "nat64_expected_asn"
         private const val KEY_NAT64_EXPECTED_REGION = "nat64_expected_region"
@@ -884,6 +889,7 @@ class RootRelayService : Service() {
                     KEY_NAT64_IPV6_FALLBACK_DESTINATIONS,
                     0,
                 ).coerceAtLeast(0),
+                nat64Prefix = prefs.getString(KEY_NAT64_PREFIX, "").orEmpty(),
                 nat64Operator = prefs.getString(KEY_NAT64_OPERATOR, "").orEmpty(),
                 nat64ExpectedAsn = prefs.getString(KEY_NAT64_EXPECTED_ASN, "").orEmpty(),
                 nat64ExpectedRegion = prefs.getString(KEY_NAT64_EXPECTED_REGION, "").orEmpty(),

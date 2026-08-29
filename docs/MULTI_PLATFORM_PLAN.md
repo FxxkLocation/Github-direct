@@ -80,7 +80,7 @@ IPv6
    - 路由快照升级为 v2，持久化 HTTP 语义策略签名；v1 候选池历史不会被新版继承。
    - Edge 147+ 合并 `BuiltInDnsClientEnabled=true` / `DnsOverHttpsMode=off`，使浏览器 DNS 保留宿主 UID。
    - NAT64 出口只接受动态严格 OpenAI 候选，并验证地区/ASN/运营主体。
-   - 已发布 NAT64 路由的 exact/suffix 边界会动态驱动受管 DNS 的 AAAA NODATA；无 IPv6 netfilter 时再使用有界 `ip -6 rule uidrange` + 当前精确 /128 不可达表兜底。停止与 guardian 均精确清理。
+   - 已发布 NAT64 路由的 exact/suffix 边界会动态驱动受管 DNS 的 AAAA NODATA；无 IPv6 netfilter 时再只按同一 generation 中实际发布的 exact/suffix 边界生成有界 `ip -6 rule uidrange` + 当前精确 /128 不可达表，任意单路由成功不会扩大到其他未通过预检的 OpenAI 域。停止与 guardian 均精确清理。
 
 4. **部分完成：历史设备验证**
    - 安装新 APK，确认 LSPosed/Root scope 与设置迁移。

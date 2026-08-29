@@ -17,6 +17,7 @@ data class SniGateRuntimeStatus(
     val generation: Long = 0L,
     val routeCount: Int = 0,
     val nat64RouteCount: Int = 0,
+    val nat64Prefix: String = "",
     val nat64Operator: String = "",
     val nat64ExpectedAsn: String = "",
     val nat64ExpectedRegion: String = "",
@@ -294,6 +295,7 @@ class SniGateRuntime(
             generation = plan.generation,
             routeCount = plan.routes.size,
             nat64RouteCount = nat64Routes.size,
+            nat64Prefix = configured?.prefix ?: representative?.nat64Prefix.orEmpty(),
             nat64Operator = configured?.operator ?: representative?.nat64Operator.orEmpty(),
             nat64ExpectedAsn = configured?.expectedAsn
                 ?: representative?.nat64ExpectedAsn.orEmpty(),
@@ -492,6 +494,7 @@ class SniGateRuntime(
         val observation = lastNat64Observation
         return SniGateRuntimeStatus(
             active = false,
+            nat64Prefix = configured?.prefix.orEmpty(),
             nat64Operator = configured?.operator.orEmpty(),
             nat64ExpectedAsn = configured?.expectedAsn.orEmpty(),
             nat64ExpectedRegion = configured?.expectedRegion.orEmpty(),
