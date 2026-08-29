@@ -73,6 +73,7 @@ class TlsEndpointProbe(
             )
         }
         val fragmentFailures = ArrayList<HandshakeResult>(MAX_FRAGMENT_ATTEMPTS)
+        var noSni: HandshakeResult? = null
         for (attempt in 0 until MAX_FRAGMENT_ATTEMPTS) {
             val fragmented = handshake(domain, address, fragment = true, sendSni = true, semanticProbe)
             if (fragmented.success) {
@@ -86,18 +87,35 @@ class TlsEndpointProbe(
                 )
             }
             fragmentFailures += fragmented
+            // 分片仍是无需 CA 的首选，但不要让第二个随机分片把严格 NO-SNI 探测推到
+            // 全局 probe deadline 之后。第一种分片失败后立即确认 NO-SNI；若它也失败，
+            // TLS_RESET 才继续第二种布局。成功结果仍完成公开链、原主机名和可选语义校验。
+            if (allowNoSni && noSni == null) {
+                val noSniAttempt =
+                    handshake(domain, address, fragment = false, sendSni = false, semanticProbe)
+                noSni = noSniAttempt
+                if (noSniAttempt.success) {
+                    return Result(
+                        RouteCapability.NO_SNI_TLS,
+                        noSniAttempt.latencyMs,
+                        noSniCapable = true,
+                        noSniProbed = true,
+                    )
+                }
+            }
             // TCP 已超时/不可达时随机重排 ClientHello 没有意义；只重试主动重置类失败。
             if (fragmented.failureStage != CandidateFailureStage.TLS_RESET) break
         }
-        val noSni = if (allowNoSni) {
-            handshake(domain, address, fragment = false, sendSni = false, semanticProbe)
-        } else {
-            null
+        if (allowNoSni && noSni == null) {
+            // MAX_FRAGMENT_ATTEMPTS 当前至少为 1；保留此分支，避免未来调整探测次数后
+            // 静默失去 NO-SNI 能力发现。
+            noSni = handshake(domain, address, fragment = false, sendSni = false, semanticProbe)
         }
-        if (noSni?.success == true) {
+        val successfulNoSni = noSni?.takeIf(HandshakeResult::success)
+        if (successfulNoSni != null) {
             return Result(
                 RouteCapability.NO_SNI_TLS,
-                noSni.latencyMs,
+                successfulNoSni.latencyMs,
                 noSniCapable = true,
                 noSniProbed = true,
             )
@@ -105,7 +123,7 @@ class TlsEndpointProbe(
         val failures = buildList {
             add(direct)
             addAll(fragmentFailures)
-            if (noSni != null) add(noSni)
+            noSni?.let(::add)
         }
         return Result(
             RouteCapability.UNUSABLE,

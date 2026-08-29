@@ -77,6 +77,7 @@ IPv6
 
 3. **实现已更新、待用户指令验证：Google 候选池、Edge DNS 与 OpenAI IPv6 回落**
    - Google/YouTube 候选池拆分为显式 scope；Google 核心域由语义锚点动态提供待验证 IP，并补入 `*.ggpht.com` / `*.recaptcha.net` 平台根。
+   - 可见 SNI 失败时按“首个分片 → 严格 NO-SNI → 必要时第二个随机分片”分配探测预算；NO-SNI 仍须通过公开链、原主机名和业务语义校验，避免大量重置候选把可用本机 CA 路径拖到下一轮刷新。
    - 路由快照升级为 v2，持久化 HTTP 语义策略签名；v1 候选池历史不会被新版继承。
    - Edge 147+ 合并 `BuiltInDnsClientEnabled=true` / `DnsOverHttpsMode=off`，使浏览器 DNS 保留宿主 UID。
    - NAT64 出口只接受动态严格 OpenAI 候选，并验证地区/ASN/运营主体。
