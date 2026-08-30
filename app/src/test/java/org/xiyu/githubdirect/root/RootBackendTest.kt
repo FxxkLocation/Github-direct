@@ -252,7 +252,7 @@ class RootBackendTest {
             },
         )
         val guardian = executor.scripts.first { it.contains("nohup sh -c") }
-        assertTrue(guardian.contains("ip -6 rule del table 52123"))
+        assertTrue(guardian.contains("ip -6 rule del priority 10500 table 52123"))
         assertTrue(guardian.contains("ip -6 route flush table 52123"))
         assertTrue(backend.healthCheck())
     }

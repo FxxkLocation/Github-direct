@@ -387,8 +387,10 @@ class FirewallRulesTest {
         assertTrue(rules.expectedMarkers().contains("uidrange 10311-10311 lookup 52123"))
         assertTrue(rules.expectedMarkers().contains("unreachable 2606:4700:4400::6812:29f1"))
         assertEquals(
-            FirewallRules.MAX_IPV6_POLICY_UIDS + 2,
-            rules.buildNat64Ipv6FallbackCleanupCommands().count { it == "ip -6 rule del table 52123" },
+            FirewallRules.MAX_IPV6_POLICY_UIDS,
+            rules.buildNat64Ipv6FallbackCleanupCommands().count {
+                it.startsWith("ip -6 rule del priority ") && it.endsWith(" table 52123")
+            },
         )
         assertTrue(rules.buildCleanupCommands().contains("ip -6 route flush table 52123"))
     }
