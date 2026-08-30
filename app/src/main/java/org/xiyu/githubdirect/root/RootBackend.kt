@@ -293,8 +293,7 @@ class RootBackend(
             val rules = activeRules ?: return false
             val r = shell.exec(*rules.verificationCommands().toTypedArray(), timeoutSec = 8)
             if (!r.ok) return false
-            val canonicalOutput = canonicalizeFirewallText(r.out)
-            rules.expectedMarkers().all { canonicalOutput.contains(canonicalizeFirewallText(it)) }
+            rules.expectedMarkers().all { outputContainsMarker(r.out, it) }
         } catch (t: Throwable) {
             false
         }
@@ -424,8 +423,7 @@ class RootBackend(
         )
         if (!r.ok) return fail("firewall.verify.command", r.diagnosticSummary())
         val markers = rules.expectedMarkers()
-        val canonicalOutput = canonicalizeFirewallText(r.out)
-        val missing = markers.filterNot { canonicalOutput.contains(canonicalizeFirewallText(it)) }
+        val missing = markers.filterNot { outputContainsMarker(r.out, it) }
         if (missing.isNotEmpty()) {
             return fail(
                 "firewall.verify.markers",
@@ -530,35 +528,138 @@ class RootBackend(
         "${t.javaClass.simpleName}: ${t.message.orEmpty()}".trim()
 
     /**
-     * 消除 `iptables -S` 的等价序列化差异：legacy 实现可能把 `-p tcp/udp` 提到
-     * owner/destination 之前，并补出冗余 `-m tcp/udp`。协议被提取成行尾语义标签，
-     * 因此仍严格校验 TCP/UDP，同时保留 UID、地址、端口、否定符和 target 的原有顺序。
+     * 判断一条校验标记是否存在于命令输出。`iptables -S` 的参数顺序不稳定：同一条
+     * 规则可能被 legacy/nft 工具箱序列化成「destination → protocol → owner」，而生成
+     * 脚本使用的是「owner → destination → protocol」。对 `-A` 规则按字段比较，既兼容
+     * 这种等价重排，也继续严格约束链、UID、地址、协议、端口与 target；其他标记仍走
+     * 规范化子串匹配（例如 `ip -6 rule show` 输出带有优先级前缀）。
      */
+    private fun outputContainsMarker(output: String, marker: String): Boolean {
+        val expected = canonicalizeFirewallLine(marker)
+        return if (marker.trimStart().startsWith("-A ")) {
+            output.lineSequence().any { canonicalizeFirewallLine(it) == expected }
+        } else {
+            canonicalizeFirewallText(output).contains(expected)
+        }
+    }
+
     private fun canonicalizeFirewallText(text: String): String =
         text.lineSequence().joinToString("\n", transform = ::canonicalizeFirewallLine)
 
+    /**
+     * 把本模块生成的 `iptables -S` append 规则规约为无序字段表示。仅忽略
+     * `-m owner` / `-m tcp` / `-m udp` 这些由其匹配项隐含的模块声明，其他未知 token
+     * 保留在尾部，避免把未来规则意外当成当前规则接受。
+     */
     private fun canonicalizeFirewallLine(raw: String): String {
-        var line = raw.trim().replace(Regex("\\s+"), " ")
-        val protocol = Regex("(?:^| )-p (tcp|udp)(?= |$)")
-            .find(line)
-            ?.groupValues
-            ?.get(1)
-        line = line
-            .replace(Regex(" +-m (?:tcp|udp)(?= |$)"), "")
-            .replace(Regex(" +-p (?:tcp|udp)(?= |$)"), "")
-            .replace(Regex("\\s+"), " ")
-            .trim()
-        line = canonicalizeIpv6Tokens(line)
-        return if (protocol == null) line else "$line [protocol=$protocol]"
+        val line = raw.trim().replace(Regex("\\s+"), " ")
+        val tokens = line.split(' ').filter(String::isNotEmpty)
+        if (tokens.size < 2 || tokens[0] != "-A") return canonicalizeIpv6Tokens(line)
+
+        val owners = mutableListOf<String>()
+        val extras = mutableListOf<String>()
+        var destination: String? = null
+        var protocol: String? = null
+        var destinationPort: String? = null
+        var target: String? = null
+        var targetPorts: String? = null
+        var rejectWith: String? = null
+        var matchSet: String? = null
+        var index = 2
+
+        fun nextOrNull(): String? = tokens.getOrNull(index + 1)
+
+        while (index < tokens.size) {
+            when (val token = tokens[index]) {
+                "-d", "--destination" -> {
+                    val value = nextOrNull() ?: return canonicalizeIpv6Tokens(line)
+                    destination = canonicalizeIpToken(value)
+                    index += 2
+                }
+                "-p", "--protocol" -> {
+                    val value = nextOrNull() ?: return canonicalizeIpv6Tokens(line)
+                    protocol = value
+                    index += 2
+                }
+                "-m" -> {
+                    val module = nextOrNull() ?: return canonicalizeIpv6Tokens(line)
+                    when (module) {
+                        "owner", "tcp", "udp", "set" -> {
+                            if (module == "tcp" || module == "udp") protocol = protocol ?: module
+                        }
+                        else -> extras += "-m $module"
+                    }
+                    index += 2
+                }
+                "!" -> {
+                    if (tokens.getOrNull(index + 1) == "--uid-owner") {
+                        val uid = tokens.getOrNull(index + 2) ?: return canonicalizeIpv6Tokens(line)
+                        owners += "!$uid"
+                        index += 3
+                    } else {
+                        extras += token
+                        index++
+                    }
+                }
+                "--uid-owner" -> {
+                    val uid = nextOrNull() ?: return canonicalizeIpv6Tokens(line)
+                    owners += uid
+                    index += 2
+                }
+                "--dport", "--destination-port" -> {
+                    destinationPort = nextOrNull() ?: return canonicalizeIpv6Tokens(line)
+                    index += 2
+                }
+                "-j", "--jump" -> {
+                    target = nextOrNull() ?: return canonicalizeIpv6Tokens(line)
+                    index += 2
+                }
+                "--to-ports" -> {
+                    targetPorts = nextOrNull() ?: return canonicalizeIpv6Tokens(line)
+                    index += 2
+                }
+                "--reject-with" -> {
+                    rejectWith = nextOrNull() ?: return canonicalizeIpv6Tokens(line)
+                    index += 2
+                }
+                "--match-set" -> {
+                    val name = nextOrNull() ?: return canonicalizeIpv6Tokens(line)
+                    val direction = tokens.getOrNull(index + 2) ?: return canonicalizeIpv6Tokens(line)
+                    matchSet = "$name $direction"
+                    index += 3
+                }
+                else -> {
+                    extras += token
+                    index++
+                }
+            }
+        }
+
+        return buildString {
+            append("-A ").append(tokens[1])
+            owners.sorted().forEach { append(" [owner=").append(it).append(']') }
+            destination?.let { append(" [destination=").append(it).append(']') }
+            protocol?.let { append(" [protocol=").append(it).append(']') }
+            destinationPort?.let { append(" [dport=").append(it).append(']') }
+            matchSet?.let { append(" [match-set=").append(it).append(']') }
+            target?.let { append(" [jump=").append(it).append(']') }
+            targetPorts?.let { append(" [to-ports=").append(it).append(']') }
+            rejectWith?.let { append(" [reject-with=").append(it).append(']') }
+            if (extras.isNotEmpty()) append(" [extra=").append(extras.joinToString(" ")).append(']')
+        }
+    }
+
+    private fun canonicalizeIpToken(token: String): String {
+        val address = token.substringBefore('/')
+        val suffix = token.removePrefix(address)
+        val raw = IpAddresses.parseIpv6(address) ?: return token
+        return IpAddresses.ipv6ToString(raw) + suffix
     }
 
     private fun canonicalizeIpv6Tokens(line: String): String = line
         .split(' ')
         .joinToString(" ") { token ->
-            val address = token.substringBefore('/')
-            val suffix = token.removePrefix(address)
-            val raw = IpAddresses.parseIpv6(address) ?: return@joinToString token
-            IpAddresses.ipv6ToString(raw) + suffix
+            canonicalizeIpToken(token)
         }
 
     /** rollback：cleanup 命令 + 停已启动的监听（§21）。 */

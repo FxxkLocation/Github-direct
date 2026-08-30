@@ -358,6 +358,32 @@ class RootBackendTest {
     }
 
     @Test
+    fun `verify 接受 legacy iptables S 把目标地址移到 owner 之前`() {
+        val executor = ScriptedExecutor()
+        val probe = FakeProbe(goodCaps())
+        val rules = FirewallRules(
+            selfUid = 10123,
+            directDestinations = setOf("140.82.112.0/20"),
+            enableRealIpRedirect = true,
+            rejectUdp443 = true,
+        )
+        // Oplus/legacy 设备实测会把 destination 与 protocol 输出到 owner 匹配之前，
+        // 并补充 `-m tcp`；规则语义与生成脚本相同。
+        val legacy = rules.buildInstallScript().replace(
+            "-A GHD_TCP -m owner ! --uid-owner 10123 -d 10.0.0.10/32 " +
+                "-p tcp --dport 443 -j REDIRECT --to-ports 7010",
+            "-A GHD_TCP -d 10.0.0.10/32 -p tcp -m owner ! --uid-owner 10123 " +
+                "-m tcp --dport 443 -j REDIRECT --to-ports 7010",
+        )
+        executor.fakeVerificationWith(legacy)
+
+        val backend = backend(executor, probe, rulesBuilder = { rules })
+
+        assertTrue(backend.start({ null }, { null }))
+        assertEquals(BackendState.ACTIVE, backend.state)
+    }
+
+    @Test
     fun `verify 规范化后仍拒绝全TLS规则协议被替换`() {
         val executor = ScriptedExecutor()
         val probe = FakeProbe(goodCaps())
