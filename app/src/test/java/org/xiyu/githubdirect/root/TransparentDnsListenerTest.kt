@@ -169,8 +169,16 @@ class TransparentDnsListenerTest {
         val second = TransparentDnsListener(udpPort = ports.udp, tcpPort = ports.tcp)
         assertFalse(second.start(handler))
         listener.stop()
-        // 释放后可重新绑定
-        assertTrue(second.start(handler))
+        // close 后的端口释放在不同 runner 内核上可能有极短延迟；保持有界重试，
+        // 仍要求监听器在 1 秒内恢复可绑定，而不是把竞态当作功能失败。
+        var rebound = false
+        repeat(40) {
+            if (!rebound) {
+                rebound = second.start(handler)
+                if (!rebound) Thread.sleep(25)
+            }
+        }
+        assertTrue(rebound)
         second.stop()
     }
 
