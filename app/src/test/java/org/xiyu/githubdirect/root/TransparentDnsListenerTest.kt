@@ -12,6 +12,7 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -32,14 +33,22 @@ class TransparentDnsListenerTest {
 
     @Test
     fun `UDP 查询收到响应回写`() {
-        val listener = TransparentDnsListener(udpPort = 15354, tcpPort = 15355)
+        val ports = freePorts()
+        val listener = TransparentDnsListener(udpPort = ports.udp, tcpPort = ports.tcp)
         assertTrue(listener.start(handler))
         assertTrue(listener.alive())
 
         val client = DatagramSocket()
         try {
             client.soTimeout = 3000
-            client.send(DatagramPacket("query".toByteArray(), 5, InetAddress.getLoopbackAddress(), 15354))
+            client.send(
+                DatagramPacket(
+                    "query".toByteArray(),
+                    5,
+                    InetAddress.getLoopbackAddress(),
+                    ports.udp,
+                ),
+            )
             val buf = ByteArray(64)
             val pkt = DatagramPacket(buf, buf.size)
             client.receive(pkt)
@@ -53,13 +62,16 @@ class TransparentDnsListenerTest {
 
     @Test
     fun `UDP handler 返回 null 时回 SERVFAIL`() {
-        val listener = TransparentDnsListener(udpPort = 15354, tcpPort = 15355)
+        val ports = freePorts()
+        val listener = TransparentDnsListener(udpPort = ports.udp, tcpPort = ports.tcp)
         assertTrue(listener.start { null })
         val client = DatagramSocket()
         try {
             client.soTimeout = 3000
             val query = ByteArray(12).also { it[0] = 0x12; it[1] = 0x34 }
-            client.send(DatagramPacket(query, query.size, InetAddress.getLoopbackAddress(), 15354))
+            client.send(
+                DatagramPacket(query, query.size, InetAddress.getLoopbackAddress(), ports.udp),
+            )
             val buf = ByteArray(64)
             val pkt = DatagramPacket(buf, buf.size)
             client.receive(pkt)
@@ -73,12 +85,13 @@ class TransparentDnsListenerTest {
 
     @Test
     fun `TCP DNS 两字节长度 framing 回写响应`() {
-        val listener = TransparentDnsListener(udpPort = 15354, tcpPort = 15355)
+        val ports = freePorts()
+        val listener = TransparentDnsListener(udpPort = ports.udp, tcpPort = ports.tcp)
         assertTrue(listener.start(handler))
 
         val client = Socket()
         try {
-            client.connect(InetSocketAddress(InetAddress.getLoopbackAddress(), 15355), 2000)
+            client.connect(InetSocketAddress(InetAddress.getLoopbackAddress(), ports.tcp), 2000)
             client.soTimeout = 3000
             val out = BufferedOutputStream(client.getOutputStream())
             val payload = "query".toByteArray()
@@ -106,7 +119,12 @@ class TransparentDnsListenerTest {
     fun `TCP DNS 连接数超限时拒接新连接`() {
         val firstRequestEntered = CountDownLatch(1)
         val releaseFirstRequest = CountDownLatch(1)
-        val listener = TransparentDnsListener(udpPort = 15354, tcpPort = 15355, tcpMaxConnections = 1)
+        val ports = freePorts()
+        val listener = TransparentDnsListener(
+            udpPort = ports.udp,
+            tcpPort = ports.tcp,
+            tcpMaxConnections = 1,
+        )
         assertTrue(listener.start { raw ->
             firstRequestEntered.countDown()
             releaseFirstRequest.await(3, TimeUnit.SECONDS)
@@ -116,7 +134,7 @@ class TransparentDnsListenerTest {
         val conn1 = Socket()
         val conn2 = Socket()
         try {
-            conn1.connect(InetSocketAddress(InetAddress.getLoopbackAddress(), 15355), 2000)
+            conn1.connect(InetSocketAddress(InetAddress.getLoopbackAddress(), ports.tcp), 2000)
             val payload = "query".toByteArray()
             val frame = ByteArray(2 + payload.size)
             DnsPacketCodec.writeU16(frame, 0, payload.size)
@@ -128,7 +146,7 @@ class TransparentDnsListenerTest {
             assertTrue(firstRequestEntered.await(2, TimeUnit.SECONDS))
 
             // 第一条连接已进入 handler 且仍占用额度，第二条必须由服务端直接关闭。
-            conn2.connect(InetSocketAddress(InetAddress.getLoopbackAddress(), 15355), 2000)
+            conn2.connect(InetSocketAddress(InetAddress.getLoopbackAddress(), ports.tcp), 2000)
             conn2.soTimeout = 3000
             val buf = ByteArray(16)
             assertEquals(-1, conn2.getInputStream().read(buf))
@@ -144,15 +162,24 @@ class TransparentDnsListenerTest {
 
     @Test
     fun `端口占用时 start 返回 false`() {
-        val listener = TransparentDnsListener(udpPort = 15354, tcpPort = 15355)
+        val ports = freePorts()
+        val listener = TransparentDnsListener(udpPort = ports.udp, tcpPort = ports.tcp)
         assertTrue(listener.start(handler))
         // 第二个监听器撞同一端口 → false（UDP 或 TCP 任一失败都失败）
-        val second = TransparentDnsListener(udpPort = 15354, tcpPort = 15355)
+        val second = TransparentDnsListener(udpPort = ports.udp, tcpPort = ports.tcp)
         assertFalse(second.start(handler))
         listener.stop()
         // 释放后可重新绑定
         assertTrue(second.start(handler))
         second.stop()
+    }
+
+    private data class TestPorts(val udp: Int, val tcp: Int)
+
+    private fun freePorts(): TestPorts {
+        val udp = DatagramSocket(0).use { it.localPort }
+        val tcp = ServerSocket(0).use { it.localPort }
+        return TestPorts(udp, tcp)
     }
 
     private fun readFully(input: java.io.InputStream, dst: ByteArray) {

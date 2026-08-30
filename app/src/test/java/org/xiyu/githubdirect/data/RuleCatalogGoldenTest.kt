@@ -135,11 +135,14 @@ class RuleCatalogGoldenTest {
         val nat64Rules = openai.domains.filter { it.nat64FallbackEligible }
         assertTrue("OpenAI NAT64 资格不得为空", nat64Rules.isNotEmpty())
         assertTrue("NAT64 资格必须同时要求 ECH", nat64Rules.all { it.echConfigDomain != null })
+        val nonOpenAiNat64Rules = loadCatalog().filterKeys { it != "openai" }.values
+            .flatMap { it.domains }
+            .filter { it.nat64FallbackEligible }
         assertTrue(
-            "其他 profile 不得隐式取得第三方 NAT64 资格",
-            loadCatalog().filterKeys { it != "openai" }.values
-                .flatMap { it.domains }
-                .none { it.nat64FallbackEligible },
+            "非 OpenAI 规则只能通过显式前置 SNI 与独立出口取得 NAT64 资格",
+            nonOpenAiNat64Rules.all {
+                it.tlsFrontSni != null && it.tlsFrontSniNat64Egress != null
+            },
         )
         assertTrue(openai.idleTimeoutSec >= 86_400)
     }
