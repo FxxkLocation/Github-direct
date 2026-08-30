@@ -88,6 +88,32 @@ class AdaptiveRouteCatalogTest {
     }
 
     @Test
+    fun `前置SNI生成优先控制面锚点但不扩大业务规则`() {
+        val targets = AdaptiveRouteCatalog.fromProfiles(
+            listOf(
+                profile(
+                    "youtube",
+                    DomainRule(
+                        "images",
+                        SuffixMatcher(".ytimg.com"),
+                        TransportPolicy.TLS_FRAGMENT_RELAY,
+                        candidatePool = "google-edge",
+                        tlsFrontSni = "g.cn",
+                        nat64FallbackEligible = true,
+                    ),
+                ),
+            ),
+        ) { true }
+
+        assertEquals(listOf("g.cn", "ytimg.com"), targets.map { it.domain })
+        val anchor = targets.first()
+        assertEquals("front-sni:g.cn", anchor.endpointGroup)
+        assertEquals("g.cn", anchor.probeDomain)
+        assertEquals("google-edge", anchor.candidatePool)
+        assertFalse(anchor.includeSubdomains)
+    }
+
+    @Test
     fun `NXDOMAIN与PASSTHROUGH不扩大真实IP防火墙目标`() {
         val targets = AdaptiveRouteCatalog.fromProfiles(
             listOf(

@@ -105,18 +105,23 @@ class Nat64EgressProbe(
             ) ?: return failed(observedAt, "RIPEstat 未返回出口 ASN 运营主体")
 
             val expectedRegion = expectedNat64RegionCode(activation.expectedRegion)
+            val asnMatches = asn.equals(activation.expectedAsn, ignoreCase = true)
+            val operatorMatches = nat64OperatorMatches(activation.operator, holder)
+            val regionMatches = expectedRegion != null && trace.regionCode == expectedRegion
             val mismatches = buildList {
-                if (!asn.equals(activation.expectedAsn, ignoreCase = true)) {
+                if (!asnMatches) {
                     add("ASN 不符：预期 ${activation.expectedAsn}，实测 $asn")
-                }
-                if (!nat64OperatorMatches(activation.operator, holder)) {
-                    add("运营主体不符：预期 ${activation.operator}，实测 $holder")
                 }
                 when {
                     expectedRegion == null -> add("预期地区必须包含两位 ISO 国家/地区代码")
-                    trace.regionCode != expectedRegion ->
+                    !regionMatches ->
                         add("地区不符：预期 $expectedRegion，实测 ${trace.regionCode}")
                 }
+            }
+            val operatorNote = if (!operatorMatches && asnMatches) {
+                "；供应方标签 ${activation.operator} 与 RIPE holder $holder 不同，已以精确 ASN 为准"
+            } else {
+                ""
             }
             Nat64EgressObservation(
                 verified = mismatches.isEmpty(),
@@ -126,7 +131,8 @@ class Nat64EgressProbe(
                 region = trace.region,
                 observedAt = observedAt,
                 detail = if (mismatches.isEmpty()) {
-                    "已通过指定 /96 实测 OpenAI auth HTTPS 边缘、BGP ASN 与地区"
+                    "已通过指定 /96 实测 OpenAI auth HTTPS 边缘、BGP ASN 与地区" +
+                        operatorNote
                 } else {
                     mismatches.joinToString("；")
                 },

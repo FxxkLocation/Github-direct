@@ -3,6 +3,8 @@ package org.xiyu.githubdirect.data
 import org.json.JSONArray
 import org.json.JSONObject
 import org.xiyu.githubdirect.core.dns.CidrFilter
+import org.xiyu.githubdirect.core.data.Nat64FallbackActivation
+import org.xiyu.githubdirect.core.data.Nat64FallbackConfig
 import org.xiyu.githubdirect.core.rules.DomainMatcher
 import org.xiyu.githubdirect.core.rules.DomainRule
 import org.xiyu.githubdirect.core.rules.DnsNames
@@ -46,6 +48,14 @@ object RuleCatalog {
         val aaaaSuppress = obj.optBoolean("aaaaSuppress", false)
         val idleTimeoutSec = obj.optInt("idleTimeoutSec", 60)
         val notes = obj.optString("notes", "")
+        val defaultTlsFrontSni = DnsNames.normalize(obj.optString("tlsFrontSni"))
+        val defaultTlsFrontSniReflectUpstream =
+            obj.optBoolean("tlsFrontSniReflectUpstream", false)
+        val defaultTlsFrontSniProbeDomain =
+            DnsNames.normalize(obj.optString("tlsFrontSniProbeDomain"))
+        val defaultTlsFrontSniNat64Egress =
+            parseNat64Egress(obj.optJSONObject("tlsFrontSniNat64Egress"))
+        val defaultNat64FallbackEligible = obj.optBoolean("nat64FallbackEligible", false)
 
         val cidr = parseCidr(obj.optJSONObject("cidr"))
         val testEndpoints = obj.optJSONArray("testEndpoints")?.let { arr ->
@@ -53,7 +63,14 @@ object RuleCatalog {
         } ?: emptyList()
 
         val providers = parseProviders(obj.optJSONArray("providers"))
-        val domains = parseDomains(obj.optJSONArray("domains"))
+        val domains = parseDomains(
+            obj.optJSONArray("domains"),
+            defaultTlsFrontSni,
+            defaultTlsFrontSniReflectUpstream,
+            defaultTlsFrontSniProbeDomain,
+            defaultTlsFrontSniNat64Egress,
+            defaultNat64FallbackEligible,
+        )
         if (domains.isEmpty()) return null
 
         return ServiceProfile(
@@ -101,19 +118,40 @@ object RuleCatalog {
         return result
     }
 
-    private fun parseDomains(arr: JSONArray?): List<DomainRule> {
+    private fun parseDomains(
+        arr: JSONArray?,
+        defaultTlsFrontSni: String?,
+        defaultTlsFrontSniReflectUpstream: Boolean,
+        defaultTlsFrontSniProbeDomain: String?,
+        defaultTlsFrontSniNat64Egress: Nat64FallbackActivation?,
+        defaultNat64FallbackEligible: Boolean,
+    ): List<DomainRule> {
         if (arr == null) return emptyList()
         val result = ArrayList<DomainRule>(arr.length())
         for (i in 0 until arr.length()) {
             try {
-                parseDomain(arr.getJSONObject(i))?.let { result.add(it) }
+                parseDomain(
+                    arr.getJSONObject(i),
+                    defaultTlsFrontSni,
+                    defaultTlsFrontSniReflectUpstream,
+                    defaultTlsFrontSniProbeDomain,
+                    defaultTlsFrontSniNat64Egress,
+                    defaultNat64FallbackEligible,
+                )?.let { result.add(it) }
             } catch (_: Exception) {
             }
         }
         return result
     }
 
-    private fun parseDomain(obj: JSONObject): DomainRule? {
+    private fun parseDomain(
+        obj: JSONObject,
+        defaultTlsFrontSni: String?,
+        defaultTlsFrontSniReflectUpstream: Boolean,
+        defaultTlsFrontSniProbeDomain: String?,
+        defaultTlsFrontSniNat64Egress: Nat64FallbackActivation?,
+        defaultNat64FallbackEligible: Boolean,
+    ): DomainRule? {
         val id = obj.optString("id").takeIf { it.isNotBlank() } ?: return null
         val matchObj = obj.optJSONObject("match") ?: return null
         val matcher: DomainMatcher = parseMatcher(matchObj) ?: return null
@@ -131,7 +169,25 @@ object RuleCatalog {
         val candidatePool = safeReference(obj.optString("candidatePool"))
         val candidatePoolScope = safeReference(obj.optString("candidatePoolScope"))
         val echConfigDomain = DnsNames.normalize(obj.optString("echConfigDomain"))
-        val nat64FallbackEligible = obj.optBoolean("nat64FallbackEligible", false)
+        val tlsFrontSni = DnsNames.normalize(obj.optString("tlsFrontSni"))
+            ?: defaultTlsFrontSni
+        val tlsFrontSniReflectUpstream = if (obj.has("tlsFrontSniReflectUpstream")) {
+            obj.optBoolean("tlsFrontSniReflectUpstream", false)
+        } else {
+            defaultTlsFrontSniReflectUpstream
+        }
+        val tlsFrontSniProbeDomain = DnsNames.normalize(obj.optString("tlsFrontSniProbeDomain"))
+            ?: defaultTlsFrontSniProbeDomain
+        val tlsFrontSniNat64Egress = if (obj.has("tlsFrontSniNat64Egress")) {
+            parseNat64Egress(obj.optJSONObject("tlsFrontSniNat64Egress"))
+        } else {
+            defaultTlsFrontSniNat64Egress
+        }
+        val nat64FallbackEligible = if (obj.has("nat64FallbackEligible")) {
+            obj.optBoolean("nat64FallbackEligible", false)
+        } else {
+            defaultNat64FallbackEligible
+        }
         val semanticProbe = parseSemanticProbe(obj.optJSONObject("semanticProbe"))
 
         return DomainRule(
@@ -147,6 +203,10 @@ object RuleCatalog {
             cidrRef = cidrRef,
             candidatePool = candidatePool,
             echConfigDomain = echConfigDomain,
+            tlsFrontSni = tlsFrontSni,
+            tlsFrontSniReflectUpstream = tlsFrontSniReflectUpstream,
+            tlsFrontSniProbeDomain = tlsFrontSniProbeDomain,
+            tlsFrontSniNat64Egress = tlsFrontSniNat64Egress,
             nat64FallbackEligible = nat64FallbackEligible,
             semanticProbe = semanticProbe,
             candidatePoolScope = candidatePoolScope,
@@ -160,6 +220,19 @@ object RuleCatalog {
             statusMin = obj.optInt("statusMin", 200),
             statusMax = obj.optInt("statusMax", 399),
         )
+    }
+
+    /** Bundled/signed rule metadata still has to pass the same strict /96 and label validation. */
+    private fun parseNat64Egress(obj: JSONObject?): Nat64FallbackActivation? {
+        obj ?: return null
+        return Nat64FallbackConfig(
+            enabled = true,
+            prefix = obj.optString("prefix"),
+            operator = obj.optString("operator"),
+            expectedAsn = obj.optString("expectedAsn"),
+            expectedRegion = obj.optString("expectedRegion"),
+            riskAccepted = true,
+        ).activationOrNull()
     }
 
     private fun parseMatcher(obj: JSONObject): DomainMatcher? {

@@ -6,6 +6,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.xiyu.githubdirect.core.dns.EndpointCache
+import org.xiyu.githubdirect.core.data.Nat64FallbackConfig
 import org.xiyu.githubdirect.core.dns.EndpointResolver
 import org.xiyu.githubdirect.core.dns.PlainDnsClient
 import org.xiyu.githubdirect.core.dns.SelectiveDnsEngine
@@ -119,6 +120,8 @@ class BackendManagerTest {
         var now = 0L
         var routeSnapshot: RouteSnapshot = RouteSnapshot.EMPTY
         var originalDestinationAvailable = false
+        var nat64FallbackDomains: Set<String> = emptySet()
+        var nat64FallbackActive = false
         val notifications = Notifications()
 
         /** 假引擎/假池：fake root 从不调用 handler，仅需非空引用满足 BackendManager 门控。 */
@@ -150,6 +153,8 @@ class BackendManagerTest {
             watchdogEnabled = false,
             routeSnapshotProvider = { routeSnapshot },
             originalDestinationAvailable = { originalDestinationAvailable },
+            nat64FallbackDomainsProvider = { nat64FallbackDomains },
+            nat64FallbackActiveProvider = { nat64FallbackActive },
         ).also { it.addBackendListener { mode, active, msg ->
             notifications.list += Triple(mode, active, msg)
         } }
@@ -585,6 +590,69 @@ class BackendManagerTest {
         assertEquals(1, rules.directIpv6DestinationCount())
         assertTrue(script.contains("-d 2606:50c0::/32 -p tcp --dport 443 -j REDIRECT"))
         assertTrue(script.contains("--reject-with icmp6-port-unreachable"))
+    }
+
+    @Test
+    fun `已验证NAT64仅为所选应用和OpenAI实时AAAA启用策略回落`() {
+        val h = Harness()
+        h.store.setAppScopeMode(AppScopeMode.SELECTED_APPS)
+        h.resolver.result = ResolvedScope(setOf(10311), degraded = false)
+        h.originalDestinationAvailable = true
+        h.prober.caps = goodCaps().copy(ipv6UidPolicyRouting = true)
+        h.store.setNat64FallbackConfig(
+            Nat64FallbackConfig(
+                enabled = true,
+                prefix = "2a01:4f9:c010:3f02:64::/96",
+                operator = "nat64.net-Helsinki",
+                expectedAsn = "AS24940",
+                expectedRegion = "FI/HEL",
+                riskAccepted = true,
+            ),
+        )
+        h.nat64FallbackDomains = setOf("openai.com")
+        h.nat64FallbackActive = true
+        fun candidate(domain: String, address: String) = EndpointCandidate(
+            domain = domain,
+            address = address,
+            source = CandidateSource.WIRE_DOH,
+            fetchedAt = 1,
+            expiresAt = 0,
+            latencyMs = 20,
+            capability = RouteCapability.DIRECT_TLS,
+        )
+        h.routeSnapshot = RouteSnapshot(
+            generation = 91,
+            createdAt = 1,
+            expiresAt = 0,
+            plans = mapOf(
+                "auth.openai.com" to EndpointPlan(
+                    "auth.openai.com",
+                    "openai-auth",
+                    candidates = listOf(
+                        candidate("auth.openai.com", "104.18.41.241"),
+                        candidate("auth.openai.com", "2606:4700:4400::6812:29f1"),
+                    ),
+                ),
+                "www.google.com" to EndpointPlan(
+                    "www.google.com",
+                    "google-web",
+                    candidates = listOf(candidate("www.google.com", "2607:f8b0:4007:80e::2004")),
+                ),
+            ),
+            metaCidrs = emptySet(),
+        )
+
+        assertTrue(h.manager.start(BackendMode.ROOT_TRANSPARENT))
+        val rules = h.root.lastRulesBuilder!!.invoke(10123)
+        assertTrue(rules.usesNat64Ipv6Fallback())
+        assertEquals(1, rules.nat64Ipv6FallbackDestinationCount())
+        val commands = rules.buildNat64Ipv6FallbackInstallCommands().joinToString("\n")
+        assertTrue(commands.contains("2606:4700:4400::6812:29f1/128"))
+        assertTrue(commands.contains("uidrange 10311-10311"))
+        assertFalse(commands.contains("2607:f8b0"))
+
+        h.nat64FallbackActive = false
+        assertFalse(h.root.lastRulesBuilder!!.invoke(10123).usesNat64Ipv6Fallback())
     }
 
     @Test

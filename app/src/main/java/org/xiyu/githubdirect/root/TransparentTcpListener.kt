@@ -6,6 +6,7 @@ import org.xiyu.githubdirect.core.routing.EndpointCandidate
 import org.xiyu.githubdirect.core.routing.EndpointPlan
 import org.xiyu.githubdirect.core.routing.RouteCapability
 import org.xiyu.githubdirect.core.routing.RouteSnapshot
+import org.xiyu.githubdirect.core.routing.isControlPlaneOnly
 import org.xiyu.githubdirect.data.DirectEngine
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
@@ -740,6 +741,7 @@ class TransparentTcpListener(
             now: Long = System.currentTimeMillis(),
         ): String? =
             snapshot.plans.values.asSequence()
+                .filterNot { it.isControlPlaneOnly() }
                 .filter { plan ->
                     plan.candidates.any { candidate ->
                         candidate.address == address && candidate.usable(now)

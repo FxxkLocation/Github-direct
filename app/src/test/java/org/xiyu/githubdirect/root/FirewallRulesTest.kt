@@ -357,6 +357,59 @@ class FirewallRulesTest {
     }
 
     @Test
+    fun `NAT64在无ip6tables设备上以所选UID和动态AAAA做策略回落`() {
+        val rules = FirewallRules(
+            selfUid = SELF,
+            scopeUids = setOf(10311, 10312),
+            scopeInclude = true,
+            directDestinations = setOf("104.18.41.241/32", "172.64.146.15/32"),
+            enableRealIpRedirect = true,
+            nat64Ipv6FallbackDestinations = setOf(
+                "2606:4700:4400::6812:29f1/128",
+                "2a06:98c1:310c::ac40:920f/128",
+                "2607:f8b0:4007:80e::2004/64", // 非精确地址不得进入回落表
+            ),
+            enableIpv6UidPolicyFallback = true,
+        )
+
+        assertTrue(rules.usesNat64Ipv6Fallback())
+        assertEquals(2, rules.nat64Ipv6FallbackDestinationCount())
+        assertEquals("", rules.buildIpv6InstallScript())
+        val install = rules.buildNat64Ipv6FallbackInstallCommands()
+        val text = install.joinToString("\n")
+        assertTrue(text.contains("ip -6 route add unreachable 2606:4700:4400::6812:29f1/128 table 52123"))
+        assertTrue(text.contains("ip -6 route add unreachable 2a06:98c1:310c::ac40:920f/128 table 52123"))
+        assertTrue(text.contains("priority 10500 uidrange 10311-10311 lookup 52123"))
+        assertTrue(text.contains("priority 10501 uidrange 10312-10312 lookup 52123"))
+        assertTrue(install.indexOfFirst { "route add" in it } < install.indexOfFirst { "rule add" in it })
+        assertFalse(text.contains("2607:f8b0"))
+        assertTrue(rules.verificationCommands().contains("ip -6 route show table 52123"))
+        assertTrue(rules.expectedMarkers().contains("uidrange 10311-10311 lookup 52123"))
+        assertTrue(rules.expectedMarkers().contains("unreachable 2606:4700:4400::6812:29f1"))
+        assertEquals(
+            FirewallRules.MAX_IPV6_POLICY_UIDS + 2,
+            rules.buildNat64Ipv6FallbackCleanupCommands().count { it == "ip -6 rule del table 52123" },
+        )
+        assertTrue(rules.buildCleanupCommands().contains("ip -6 route flush table 52123"))
+    }
+
+    @Test
+    fun `NAT64策略回落拒绝ALL和EXCLUDED作用域`() {
+        fun rules(scope: Set<Int>?, include: Boolean) = FirewallRules(
+            selfUid = SELF,
+            scopeUids = scope,
+            scopeInclude = include,
+            directDestinations = setOf("104.18.41.241/32"),
+            enableRealIpRedirect = true,
+            nat64Ipv6FallbackDestinations = setOf("2606:4700:4400::6812:29f1/128"),
+            enableIpv6UidPolicyFallback = true,
+        )
+
+        assertFalse(rules(null, true).usesNat64Ipv6Fallback())
+        assertFalse(rules(setOf(10311), false).usesNat64Ipv6Fallback())
+    }
+
+    @Test
     fun `ipset模式使用固定集合原子swap与20秒租约`() {
         val rules = FirewallRules(
             selfUid = SELF,

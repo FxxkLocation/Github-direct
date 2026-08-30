@@ -79,6 +79,12 @@ data class EndpointPlan(
     val candidates: List<EndpointCandidate>,
 )
 
+/** 只为本机控制面提供候选，不得进入透明代理的目的地址集合。 */
+internal fun EndpointPlan.isControlPlaneOnly(): Boolean =
+    endpointGroup.startsWith(CONTROL_PLANE_FRONT_SNI_GROUP_PREFIX)
+
+internal const val CONTROL_PLANE_FRONT_SNI_GROUP_PREFIX = "front-sni:"
+
 data class RouteSnapshot(
     val generation: Long,
     val createdAt: Long,
@@ -110,6 +116,7 @@ data class RouteSnapshot(
     fun relayHosts(now: Long = System.currentTimeMillis()): Map<String, List<String>> {
         val result = LinkedHashMap<String, List<String>>()
         for (plan in plans.values) {
+            if (plan.isControlPlaneOnly()) continue
             val addresses = candidatesFor(plan.domain, now).map { it.address }.distinct()
             if (addresses.isEmpty()) continue
             result[plan.domain] = addresses
@@ -123,6 +130,7 @@ data class RouteSnapshot(
         val result = LinkedHashSet<String>()
         metaCidrs.filterTo(result) { RouteSnapshotCodec.isRoutableCidr(it) }
         for (plan in plans.values) {
+            if (plan.isControlPlaneOnly()) continue
             for (candidate in plan.candidates) {
                 if (candidate.expiresAt > 0L && now >= candidate.expiresAt) continue
                 val raw = IpAddresses.parseIpAddress(candidate.address) ?: continue
@@ -152,6 +160,7 @@ data class RouteSnapshot(
 
         val result = LinkedHashSet<String>()
         for (plan in plans.values) {
+            if (plan.isControlPlaneOnly()) continue
             val authorized = roots.any { root ->
                 plan.domain == root ||
                     plan.domain.endsWith(".$root") ||
@@ -190,6 +199,7 @@ data class RouteSnapshot(
 
         val result = LinkedHashSet<String>()
         for (plan in plans.values) {
+            if (plan.isControlPlaneOnly()) continue
             val planDomain = DnsNames.normalize(plan.domain) ?: continue
             val authorized = planDomain in exact || suffixes.any { root ->
                 planDomain == root || planDomain.endsWith(".$root")

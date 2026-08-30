@@ -59,10 +59,10 @@ class RouteSnapshotTest {
     }
 
     @Test
-    fun `旧快照按历史能力推导no-SNI且不误判直连候选`() {
+    fun `缺省no-SNI字段按历史能力推导且不误判直连候选`() {
         val decoded = RouteSnapshotCodec.decode(
             """{
-              "version":1,
+              "version":2,
               "plans":[{"domain":"example.com","endpointGroup":"web","candidates":[
                 {"address":"8.8.8.8","source":"WIRE_DOH","capability":"DIRECT_TLS"},
                 {"address":"8.8.4.4","source":"WIRE_DOH","capability":"NO_SNI_TLS"}
@@ -98,7 +98,7 @@ class RouteSnapshotTest {
     fun `持久化快照和拦截目标拒绝私网保留地址`() {
         val decoded = RouteSnapshotCodec.decode(
             """{
-              "version":1,
+              "version":2,
               "metaCidrs":["127.0.0.0/8","140.82.112.0/20"],
               "plans":[{"domain":"github.com","endpointGroup":"web","candidates":[
                 {"address":"127.0.0.1","source":"LOCAL_DNS","capability":"DIRECT_TLS"},
@@ -162,5 +162,78 @@ class RouteSnapshotTest {
         )
         assertEquals(listOf("185.199.108.153"), snapshot.relayHosts()["github.io"])
         assertEquals(listOf("185.199.108.153"), snapshot.relayHosts()["*.github.io"])
+    }
+
+    @Test
+    fun `控制面前置SNI候选不进入透明代理目的集合`() {
+        val candidate = EndpointCandidate(
+            "g.cn", "142.250.4.160", CandidateSource.WIRE_DOH,
+            0, 0, 10, RouteCapability.DIRECT_TLS,
+        )
+        val snapshot = RouteSnapshot(
+            1, 0, 0,
+            mapOf(
+                "g.cn" to EndpointPlan(
+                    "g.cn",
+                    "front-sni:g.cn",
+                    candidates = listOf(candidate),
+                ),
+            ),
+            emptySet(),
+        )
+
+        assertEquals(listOf("142.250.4.160"), snapshot.candidatesFor("g.cn").map { it.address })
+        assertTrue(snapshot.relayHosts().isEmpty())
+        assertTrue(snapshot.interceptDestinations().isEmpty())
+        assertTrue(snapshot.candidateDestinationsForDomains(setOf("g.cn")).isEmpty())
+        assertTrue(
+            snapshot.candidateDestinationsForDomainBoundaries(
+                exactDomains = setOf("g.cn"),
+                suffixDomains = emptySet(),
+            ).isEmpty(),
+        )
+    }
+
+    @Test
+    fun `按授权域名提取动态候选且不混入其他平台或Meta网段`() {
+        val now = 10_000L
+        fun candidate(domain: String, address: String, expiresAt: Long = 0L) = EndpointCandidate(
+            domain, address, CandidateSource.WIRE_DOH,
+            fetchedAt = now, expiresAt = expiresAt, latencyMs = 20,
+            capability = RouteCapability.DIRECT_TLS,
+        )
+        val snapshot = RouteSnapshot(
+            generation = 9,
+            createdAt = now,
+            expiresAt = 0,
+            plans = mapOf(
+                "auth.openai.com" to EndpointPlan(
+                    "auth.openai.com",
+                    "openai-auth",
+                    candidates = listOf(
+                        candidate("auth.openai.com", "172.64.146.15"),
+                        candidate("auth.openai.com", "2606:4700:4400::6812:29f1"),
+                        candidate("auth.openai.com", "2a06:98c1:310c::ac40:920f"),
+                        candidate("auth.openai.com", "2606:4700::dead", now),
+                    ),
+                ),
+                "www.google.com" to EndpointPlan(
+                    "www.google.com",
+                    "google-web",
+                    candidates = listOf(candidate("www.google.com", "2607:f8b0:4007:80e::2004")),
+                ),
+            ),
+            metaCidrs = setOf("2606:4700::/32"),
+        )
+
+        assertEquals(
+            setOf(
+                "172.64.146.15/32",
+                "2606:4700:4400::6812:29f1/128",
+                "2a06:98c1:310c::ac40:920f/128",
+            ),
+            snapshot.candidateDestinationsForDomains(setOf("openai.com"), now),
+        )
+        assertTrue(snapshot.candidateDestinationsForDomains(setOf("penai.com"), now).isEmpty())
     }
 }

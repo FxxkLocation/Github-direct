@@ -41,6 +41,17 @@ data class Nat64FallbackConfig(
 
     companion object {
         val DISABLED = Nat64FallbackConfig()
+
+        /**
+         * 2026-08-30 实机验证的 OpenAI 地区策略预设。只用于空白配置表单预填；保持关闭，
+         * 用户仍须确认第三方数据面风险，运行时也会重新校验 HTTPS、ASN 与 US/ABQ。
+         */
+        val RECOMMENDED_OPENAI_US = Nat64FallbackConfig(
+            prefix = "2602:fc59:20:64:0:0:0:0/96",
+            operator = "ZTVI-Albuquerque",
+            expectedAsn = "AS19625",
+            expectedRegion = "US/ABQ",
+        )
         private const val MAX_OPERATOR_CHARS = 80
         private const val MAX_REGION_CHARS = 80
     }

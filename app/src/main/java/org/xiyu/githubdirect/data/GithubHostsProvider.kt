@@ -127,7 +127,7 @@ class GithubHostsProvider(
             }
 
             scheduler = Executors.newSingleThreadScheduledExecutor { runnable ->
-                Thread(runnable, "GHD-RouteRefresh").apply { isDaemon = true }
+                routeWorker(runnable, "GHD-RouteRefresh")
             }.also { executor ->
                 executor.schedule({ syncNow() }, INITIAL_REFRESH_DELAY_SEC, TimeUnit.SECONDS)
                 val interval = maxOf(MIN_REFRESH_HOURS, spec.intervalHours)
@@ -329,7 +329,7 @@ class GithubHostsProvider(
         )
 
         val sourcePool = Executors.newFixedThreadPool(SOURCE_WORKERS) { runnable ->
-            Thread(runnable, "GHD-RouteSource").apply { isDaemon = true }
+            routeWorker(runnable, "GHD-RouteSource")
         }
         val seedPlans = try {
             val calls = targets.map { target ->
@@ -646,7 +646,7 @@ class GithubHostsProvider(
     ): Map<ProbeKey, EndpointCandidate> {
         if (seeds.isEmpty()) return emptyMap()
         val pool = Executors.newFixedThreadPool(PROBE_WORKERS) { runnable ->
-            Thread(runnable, "GHD-TlsProbe").apply { isDaemon = true }
+            routeWorker(runnable, "GHD-TlsProbe")
         }
         return try {
             val probe = TlsEndpointProbe(binder, TLS_PROBE_TIMEOUT_MS)
@@ -823,7 +823,7 @@ class GithubHostsProvider(
             return AuxiliarySources(null, emptyMap(), null)
         }
         val pool = Executors.newFixedThreadPool(3) { runnable ->
-            Thread(runnable, "GHD-RouteAux").apply { isDaemon = true }
+            routeWorker(runnable, "GHD-RouteAux")
         }
         val deadline = System.nanoTime() +
             TimeUnit.SECONDS.toNanos(SOURCE_AUXILIARY_DEADLINE_SEC)
@@ -931,7 +931,7 @@ class GithubHostsProvider(
 
     private fun resolveSystem(domain: String): List<String> {
         val pool = Executors.newSingleThreadExecutor { runnable ->
-            Thread(runnable, "GHD-SystemDns").apply { isDaemon = true }
+            routeWorker(runnable, "GHD-SystemDns")
         }
         return try {
             val future = pool.submit<List<String>> {
@@ -948,6 +948,13 @@ class GithubHostsProvider(
             pool.shutdownNow()
         }
     }
+
+    private fun routeWorker(runnable: Runnable, name: String): Thread = Thread(
+        null,
+        runnable,
+        name,
+        ROUTE_THREAD_STACK_BYTES,
+    ).apply { isDaemon = true }
 
     private fun baseCandidate(base: RouteSnapshot, domain: String, raw: ByteArray): EndpointCandidate? {
         val address = if (raw.size == 4) IpAddresses.ipv4ToString(raw) else IpAddresses.ipv6ToString(raw)
@@ -1043,6 +1050,7 @@ class GithubHostsProvider(
         private const val WIRE_RESOLVE_TIMEOUT_MS = 2_500
         private const val SYSTEM_DNS_TIMEOUT_MS = 1_500L
         private const val TLS_PROBE_TIMEOUT_MS = 2_200
+        private const val ROUTE_THREAD_STACK_BYTES = 512L * 1024L
         private val REPROBE_AFTER_MS = TimeUnit.HOURS.toMillis(6)
         private val CANDIDATE_TTL_MS = TimeUnit.HOURS.toMillis(24)
         private val SNAPSHOT_TTL_MS = TimeUnit.HOURS.toMillis(24)
