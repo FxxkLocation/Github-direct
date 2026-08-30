@@ -703,7 +703,7 @@ class BackendManager @JvmOverloads constructor(
             // 兼容直接构造 BackendManager 的旧注入边界；Android 生产装配不会走这里。
             nat64FallbackActiveProvider()
         }
-        val nat64Ipv6Fallback = if (
+        val nat64Ipv6FallbackSelection: Pair<Set<String>, Set<String>> = if (
             mode == AppScopeMode.SELECTED_APPS && enableRealRedirect &&
             capabilities.ipv6UidPolicyRouting && !capabilities.ipv6Netfilter &&
             settings.nat64FallbackConfig().activationOrNull() != null &&
@@ -717,11 +717,19 @@ class BackendManager @JvmOverloads constructor(
             } else {
                 snapshot.candidateDestinationsForDomains(nat64FallbackDomainsProvider())
             }
-            destinations
-                .filterTo(LinkedHashSet()) { it.endsWith("/128") }
+            val ipv6Destinations = destinations
+                .filterTo(LinkedHashSet<String>()) { it.endsWith("/128") }
+            val strictNat64Destinations = snapshot
+                .candidateDestinationsForDomains(nat64FallbackDomainsProvider())
+                .filterTo(LinkedHashSet<String>()) {
+                    it.endsWith("/128") && it in ipv6Destinations
+                }
+            ipv6Destinations to strictNat64Destinations
         } else {
-            emptySet()
+            emptySet<String>() to emptySet<String>()
         }
+        val (nat64Ipv6Fallback, nat64Ipv6FallbackPriority) =
+            nat64Ipv6FallbackSelection
         return FirewallRules(
             selfUid = selfUid,
             scopeUids = effectiveScope,
@@ -734,6 +742,7 @@ class BackendManager @JvmOverloads constructor(
             rejectUdp443 = capabilities.rejectTarget,
             rejectIpv6Udp443 = capabilities.ipv6RejectTarget,
             nat64Ipv6FallbackDestinations = nat64Ipv6Fallback,
+            nat64Ipv6FallbackPriorityDestinations = nat64Ipv6FallbackPriority,
             enableIpv6UidPolicyFallback = nat64Ipv6Fallback.isNotEmpty(),
             generation = snapshot.generation,
         )

@@ -41,6 +41,7 @@ class RootCapabilityProbeTest {
         var ip6OwnerProbeAvailable: Boolean = false
         var ip6RedirectProbeAvailable: Boolean = false
         var ip6RejectProbeAvailable: Boolean = false
+        var ipv6UidPolicyAvailable: Boolean = false
 
         private fun reply(script: String): RootShell.Result {
             when {
@@ -96,6 +97,9 @@ class RootCapabilityProbeTest {
                     return RootShell.Result(if (ip6RejectProbeAvailable) 0 else 1, "", "", false)
                 script.startsWith("set -e\niptables -t filter -N GHD_PROBE_REJECT") ->
                     return RootShell.Result(if (rejectProbeAvailable) 0 else 1, "", "", false)
+                script.startsWith(
+                    "set -e\nip -6 route add unreachable 2001:db8::1/128 table 52999",
+                ) -> return RootShell.Result(if (ipv6UidPolicyAvailable) 0 else 1, "", "", false)
                 else -> return RootShell.Result(1, "", "no", false)
             }
         }
@@ -236,6 +240,24 @@ class RootCapabilityProbeTest {
         assertFalse(caps.ipv6Netfilter)
         assertFalse(caps.ipv6RejectTarget)
         assertTrue(caps.requiredOk())
+    }
+
+    @Test
+    fun `ip6tables不可用时仍可独立探测按UID策略路由`() {
+        val exec = ScriptExecutor().apply {
+            ipv6UidPolicyAvailable = true
+        }
+
+        val caps = probe(exec, appUid = 10372)
+
+        assertFalse(caps.ipv6Netfilter)
+        assertTrue(caps.ipv6UidPolicyRouting)
+        assertTrue(
+            exec.scripts.any {
+                it.contains("uidrange 10372-10372") && it.contains("to 2001:db8::1/128")
+            },
+        )
+        assertTrue(exec.scripts.any { it.contains("rule del priority 10998") })
     }
 
     @Test

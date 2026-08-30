@@ -67,6 +67,14 @@ class SniGateRuntime(
     @Volatile
     private var lastNat64Observation = Nat64EgressObservation.NONE
 
+    /** 同一全局风险开关下，地区敏感流量与媒体流量可以使用不同的已验证公共出口。 */
+    @Volatile
+    private var activeNat64Activations: Set<Nat64FallbackActivation> = emptySet()
+
+    @Volatile
+    private var lastNat64Observations: Map<Nat64FallbackActivation, Nat64EgressObservation> =
+        emptyMap()
+
     /** 出口观测只能在同一路由 generation 内短暂复用；网络/候选切换必须重新实测。 */
     @Volatile
     private var activeNat64ProbeGeneration = Long.MIN_VALUE
@@ -104,55 +112,95 @@ class SniGateRuntime(
         forceVerification: Boolean = false,
     ): SniGateRuntimeStatus {
         val eligibleNat64Domains = DirectEngine.enabledNat64FallbackDomains()
+        val enabledTlsFrontSniDomains = DirectEngine.enabledTlsFrontSniDomains()
+        val reflectUpstreamDomains = DirectEngine.enabledTlsFrontSniReflectUpstreamDomains()
+        val frontSniProbeDomains = DirectEngine.enabledTlsFrontSniProbeDomains()
+        val configuredFrontSniEgresses = DirectEngine.enabledTlsFrontSniNat64Egresses()
         val configuredNat64 = DirectEngine.settings()?.nat64FallbackConfig()?.activationOrNull()
-        val previousNat64Activation = activeNat64Activation
-        val previousNat64Observation = lastNat64Observation
+        val previousNat64Activations = activeNat64Activations
+        val previousNat64Observations = lastNat64Observations
         val previousNat64ProbeGeneration = activeNat64ProbeGeneration
+        val configuredNat64Required = eligibleNat64Domains.isNotEmpty() ||
+            enabledTlsFrontSniDomains.keys.any { it !in configuredFrontSniEgresses }
+        val requestedNat64Activations = if (configuredNat64 == null) {
+            emptySet()
+        } else {
+            buildSet {
+                if (configuredNat64Required) add(configuredNat64)
+                addAll(configuredFrontSniEgresses.values)
+            }
+        }
+        val nat64Requested = requestedNat64Activations.isNotEmpty()
         val trustedOpenAiIpv4 = snapshot.trustedIpv4ProbeSeedsFor(
             Nat64EgressProbe.OPENAI_AUTH_TRACE_HOST,
         )
         activeNat64Activation = configuredNat64
+        activeNat64Activations = requestedNat64Activations
         activeNat64ProbeGeneration = snapshot.generation
-        lastNat64Observation = when {
-            configuredNat64 == null -> Nat64EgressObservation.NONE
-            eligibleNat64Domains.isEmpty() -> Nat64EgressObservation(
-                observedAt = System.currentTimeMillis(),
-                detail = "没有已启用且允许 NAT64 的 OpenAI/ChatGPT 规则",
-            )
-            trustedOpenAiIpv4.isEmpty() -> Nat64EgressObservation(
-                observedAt = System.currentTimeMillis(),
-                detail = "${Nat64EgressProbe.OPENAI_AUTH_TRACE_HOST} 没有本代可信来源 IPv4 种子",
-            )
-            else -> {
-                val reused = if (
-                    !forceVerification && previousNat64ProbeGeneration == snapshot.generation
-                ) {
-                    reusableNat64Observation(
-                        previousActivation = previousNat64Activation,
-                        configuredActivation = configuredNat64,
-                        observation = previousNat64Observation,
-                        now = System.currentTimeMillis(),
-                        maxAgeMs = NAT64_OBSERVATION_REUSE_MS,
-                    )
-                } else {
-                    null
+        val probeNow = System.currentTimeMillis()
+        lastNat64Observations = requestedNat64Activations.associateWith { activation ->
+            when {
+                trustedOpenAiIpv4.isEmpty() -> Nat64EgressObservation(
+                    observedAt = probeNow,
+                    detail = "${Nat64EgressProbe.OPENAI_AUTH_TRACE_HOST} 没有本代可信来源 IPv4 种子",
+                )
+                else -> {
+                    val reused = if (
+                        !forceVerification && previousNat64ProbeGeneration == snapshot.generation
+                    ) {
+                        reusableNat64Observation(
+                            previousActivation = activation.takeIf {
+                                it in previousNat64Activations
+                            },
+                            configuredActivation = activation,
+                            observation = previousNat64Observations[activation]
+                                ?: Nat64EgressObservation.NONE,
+                            now = probeNow,
+                            maxAgeMs = NAT64_OBSERVATION_REUSE_MS,
+                        )
+                    } else {
+                        null
+                    }
+                    reused?.also {
+                        Log.i(
+                            TAG,
+                            "reuse verified NAT64 observation " +
+                                "operator=${activation.operator}, " +
+                                "generation=${snapshot.generation}, " +
+                                "age=${probeNow - it.observedAt}ms",
+                        )
+                    } ?: nat64EgressProbe.probe(activation, trustedOpenAiIpv4)
                 }
-                reused?.also {
-                    Log.i(
-                        TAG,
-                        "reuse verified NAT64 observation " +
-                            "generation=${snapshot.generation}, " +
-                            "age=${System.currentTimeMillis() - it.observedAt}ms",
-                    )
-                } ?: nat64EgressProbe.probe(configuredNat64, trustedOpenAiIpv4)
             }
         }
-        val verifiedNat64 = configuredNat64?.takeIf { lastNat64Observation.verified }
+        lastNat64Observation = when {
+            configuredNat64 == null -> Nat64EgressObservation.NONE
+            !nat64Requested -> Nat64EgressObservation(
+                observedAt = probeNow,
+                detail = "没有已启用且允许 NAT64 的 TLS 路由规则",
+            )
+            else -> lastNat64Observations[configuredNat64] ?: Nat64EgressObservation.NONE
+        }
+        val verifiedNat64 = configuredNat64?.takeIf {
+            lastNat64Observations[it]?.verified == true
+        }
+        val verifiedFrontSniEgresses = if (configuredNat64 == null) {
+            emptyMap()
+        } else {
+            configuredFrontSniEgresses.filterValues { activation ->
+                lastNat64Observations[activation]?.verified == true
+            }
+        }
         val plan = TlsTerminationPlanner.plan(
             snapshot = snapshot,
             enabledRelayDomains = DirectEngine.enabledRelayDomains(),
             enabledRelaySuffixes = DirectEngine.enabledRelaySuffixes(),
             enabledEchConfigDomains = DirectEngine.enabledEchConfigDomains(),
+            enabledTlsFrontSniDomains = enabledTlsFrontSniDomains,
+            tlsFrontSniReflectUpstreamDomains = reflectUpstreamDomains,
+            tlsFrontSniProbeDomains = frontSniProbeDomains,
+            tlsFrontSniNat64Egresses = verifiedFrontSniEgresses,
+            configuredTlsFrontSniNat64Domains = configuredFrontSniEgresses.keys,
             nat64FallbackEligibleDomains = eligibleNat64Domains,
             nat64Fallback = verifiedNat64,
         )
@@ -289,6 +337,20 @@ class SniGateRuntime(
             if (configured != null && !observation.verified && observation.detail.isNotBlank()) {
                 add("NON_STRICT_NAT64 未激活：${observation.detail}")
             }
+            if (activeNat64Activations.size > 1) {
+                val verifiedCount = activeNat64Activations.count {
+                    lastNat64Observations[it]?.verified == true
+                }
+                add("NAT64 多出口已验证 $verifiedCount/${activeNat64Activations.size}")
+                activeNat64Activations.asSequence()
+                    .filter { lastNat64Observations[it]?.verified != true }
+                    .forEach { activation ->
+                        val failure = lastNat64Observations[activation]?.detail
+                            .orEmpty()
+                            .ifBlank { "未返回实测结果" }
+                        add("${activation.operator}：$failure")
+                    }
+            }
         }.joinToString("；")
         return SniGateRuntimeStatus(
             active = true,
@@ -423,6 +485,8 @@ class SniGateRuntime(
         if (clearNat64State) {
             activeNat64Activation = null
             lastNat64Observation = Nat64EgressObservation.NONE
+            activeNat64Activations = emptySet()
+            lastNat64Observations = emptyMap()
             activeNat64ProbeGeneration = Long.MIN_VALUE
         }
         lastStatus = SniGateRuntimeStatus(false)

@@ -738,6 +738,10 @@ class TransparentTcpListenerTest {
             }
             assertEquals(1, terminatorAccepted.get())
             assertEquals(0, directAttempts.get())
+            for (attempt in 0 until 50) {
+                if (listener.stats().terminatedTlsTotal == 1L) break
+                Thread.sleep(10)
+            }
             assertEquals(1L, listener.stats().terminatedTlsTotal)
         } finally {
             listener.stop()

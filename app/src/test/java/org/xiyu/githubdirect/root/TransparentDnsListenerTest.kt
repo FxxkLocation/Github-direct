@@ -13,6 +13,8 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * TransparentDnsListener 测试：UDP 查询→响应回写、TCP DNS 两字节 framing、
@@ -102,24 +104,42 @@ class TransparentDnsListenerTest {
 
     @Test
     fun `TCP DNS 连接数超限时拒接新连接`() {
+        val firstRequestEntered = CountDownLatch(1)
+        val releaseFirstRequest = CountDownLatch(1)
         val listener = TransparentDnsListener(udpPort = 15354, tcpPort = 15355, tcpMaxConnections = 1)
-        assertTrue(listener.start(handler))
+        assertTrue(listener.start { raw ->
+            firstRequestEntered.countDown()
+            releaseFirstRequest.await(3, TimeUnit.SECONDS)
+            handler(raw)
+        })
 
         val conn1 = Socket()
-        conn1.connect(InetSocketAddress(InetAddress.getLoopbackAddress(), 15355), 2000)
-        // 第二条连接：服务端直接关闭（read 返回 -1 或异常）
         val conn2 = Socket()
-        conn2.connect(InetSocketAddress(InetAddress.getLoopbackAddress(), 15355), 2000)
-        conn2.soTimeout = 3000
         try {
+            conn1.connect(InetSocketAddress(InetAddress.getLoopbackAddress(), 15355), 2000)
+            val payload = "query".toByteArray()
+            val frame = ByteArray(2 + payload.size)
+            DnsPacketCodec.writeU16(frame, 0, payload.size)
+            System.arraycopy(payload, 0, frame, 2, payload.size)
+            conn1.getOutputStream().apply {
+                write(frame)
+                flush()
+            }
+            assertTrue(firstRequestEntered.await(2, TimeUnit.SECONDS))
+
+            // 第一条连接已进入 handler 且仍占用额度，第二条必须由服务端直接关闭。
+            conn2.connect(InetSocketAddress(InetAddress.getLoopbackAddress(), 15355), 2000)
+            conn2.soTimeout = 3000
             val buf = ByteArray(16)
             assertEquals(-1, conn2.getInputStream().read(buf))
         } catch (e: java.net.SocketException) {
             // 预期：连接被重置
+        } finally {
+            releaseFirstRequest.countDown()
+            conn2.close()
+            conn1.close()
+            listener.stop()
         }
-        conn2.close()
-        conn1.close()
-        listener.stop()
     }
 
     @Test

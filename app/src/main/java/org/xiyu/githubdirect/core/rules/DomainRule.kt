@@ -1,6 +1,7 @@
 package org.xiyu.githubdirect.core.rules
 
 import org.xiyu.githubdirect.core.dns.CidrFilter
+import org.xiyu.githubdirect.core.data.Nat64FallbackActivation
 
 /**
  * 单条域名规则。
@@ -17,6 +18,14 @@ import org.xiyu.githubdirect.core.dns.CidrFilter
  * - candidatePool: 声明 CDN/运营方候选池，不直接共享验证结论
  * - candidatePoolScope: 显式允许跨 endpointGroup 共享已验证 IP 种子；缺省时仍以 endpointGroup 隔离
  * - echConfigDomain: 可选 ECH 公共配置名；只声明预检策略，不携带固定上游地址
+ * - tlsFrontSni: 本地 TLS 终止后重建上游连接所用的平台自有前置 SNI；只能与显式
+ *   NAT64 资格共同生效，目标 Host/SNI 边界仍来自 matcher
+ * - tlsFrontSniReflectUpstream: 不把动态域族固定到单个 CDN IP；按每次原始 SNI 通过
+ *   可信解析器选择上游，再仅替换上游 ClientHello 的 SNI
+ * - tlsFrontSniProbeDomain: 反射上游后缀路由的稳定代表主机；只用于发布前端到端验证
+ * - tlsFrontSniNat64Egress: 可选的规则级公共 NAT64 出口。它只在用户已显式开启全局
+ *   NAT64 风险开关且该出口通过实时 ASN/地区探测后生效，用于让地区敏感平台与
+ *   Google/媒体平台选择不同数据面，而不在转发器中硬编码域名
  * - nat64FallbackEligible: 该规则是否允许进入用户显式开启的第三方 NAT64 ECH 兜底
  * - semanticProbe: 可选 HTTPS 业务探测；避免证书兼容但虚拟主机返回错误内容的 CDN 地址
  */
@@ -33,6 +42,10 @@ data class DomainRule(
     val cidrRef: String? = null,
     val candidatePool: String? = null,
     val echConfigDomain: String? = null,
+    val tlsFrontSni: String? = null,
+    val tlsFrontSniReflectUpstream: Boolean = false,
+    val tlsFrontSniProbeDomain: String? = null,
+    val tlsFrontSniNat64Egress: Nat64FallbackActivation? = null,
     val nat64FallbackEligible: Boolean = false,
     val semanticProbe: HttpSemanticProbePolicy? = null,
     val candidatePoolScope: String? = null,

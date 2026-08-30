@@ -2,6 +2,7 @@ package org.xiyu.githubdirect.root
 
 import org.xiyu.githubdirect.core.dns.IpAddresses
 import org.xiyu.githubdirect.core.data.Nat64FallbackActivation
+import org.xiyu.githubdirect.core.data.Nat64FallbackConfig
 import org.xiyu.githubdirect.core.data.normalizePublicNat64Prefix96
 import org.xiyu.githubdirect.core.rules.DnsNames
 import org.xiyu.githubdirect.core.routing.CandidateSource
@@ -18,6 +19,9 @@ enum class TlsTerminationMethod {
 
     /** 不发送上游 SNI，但仍按原始域名验证公开证书。 */
     NO_SNI,
+
+    /** 本地终止后用规则声明的平台自有 SNI 重建上游 TLS；目标 Host 保持不变。 */
+    FRONT_SNI,
 }
 
 data class TlsTerminationRoute(
@@ -32,9 +36,15 @@ data class TlsTerminationRoute(
     val upstreamAddress: String? = null,
     /** 固定 ECH 上游；为空时反射每次连接的原始 SNI。 */
     val upstreamHost: String? = null,
+    /** FRONT_SNI 路由实际发送给上游的平台自有 server_name。 */
+    val frontSni: String? = null,
+    /** true 时拨号主机逐连接反射原始 SNI，不能复用某个固定 CDN 地址。 */
+    val reflectUpstreamHost: Boolean = false,
+    /** 动态后缀路由发布前使用的稳定代表主机，仍须位于当前 matcher 边界。 */
+    val verificationDomain: String? = null,
     /** 固定 HTTPS RR 名称；为空时查询每次连接的真实内层域名。 */
     val echConfigDomain: String? = null,
-    /** 用户显式选择的第三方公共 NAT64 /96；仅 ECH + 固定 IPv4 上游可用。 */
+    /** 用户显式选择且已实测的第三方公共 NAT64 /96。 */
     val nat64Prefix: String? = null,
     val nat64Operator: String? = null,
     val nat64ExpectedAsn: String? = null,
@@ -75,6 +85,11 @@ object TlsTerminationPlanner {
         enabledRelayDomains: Set<String> = emptySet(),
         enabledRelaySuffixes: Set<String> = emptySet(),
         enabledEchConfigDomains: Map<String, String> = emptyMap(),
+        enabledTlsFrontSniDomains: Map<String, String> = emptyMap(),
+        tlsFrontSniReflectUpstreamDomains: Set<String> = emptySet(),
+        tlsFrontSniProbeDomains: Map<String, String> = emptyMap(),
+        tlsFrontSniNat64Egresses: Map<String, Nat64FallbackActivation> = emptyMap(),
+        configuredTlsFrontSniNat64Domains: Set<String> = tlsFrontSniNat64Egresses.keys,
         nat64FallbackEligibleDomains: Set<String> = emptySet(),
         nat64Fallback: Nat64FallbackActivation? = null,
     ): TlsTerminationPlan {
@@ -92,11 +107,53 @@ object TlsTerminationPlanner {
                 if (domain in managedDomains) domain to echDomain else null
             }
             .toMap(LinkedHashMap())
+        val managedTlsFrontSniDomains = enabledTlsFrontSniDomains.entries.asSequence()
+            .mapNotNull { (rawDomain, rawFrontSni) ->
+                val domain = DnsNames.normalize(rawDomain) ?: return@mapNotNull null
+                val frontSni = DnsNames.normalize(rawFrontSni) ?: return@mapNotNull null
+                if (domain in managedDomains) domain to frontSni else null
+            }
+            .toMap(LinkedHashMap())
+        val managedReflectUpstreamDomains = tlsFrontSniReflectUpstreamDomains.asSequence()
+            .mapNotNull(DnsNames::normalize)
+            .filter(managedTlsFrontSniDomains::containsKey)
+            .toSet()
+        val managedFrontSniProbeDomains = tlsFrontSniProbeDomains.entries.asSequence()
+            .mapNotNull { (rawDomain, rawProbe) ->
+                val domain = DnsNames.normalize(rawDomain) ?: return@mapNotNull null
+                val probe = DnsNames.normalize(rawProbe) ?: return@mapNotNull null
+                if (domain !in managedReflectUpstreamDomains) return@mapNotNull null
+                val includeSubdomains = domain in managedSuffixes
+                val insideBoundary = probe == domain ||
+                    (includeSubdomains && probe.endsWith(".$domain"))
+                if (insideBoundary) domain to probe else null
+            }
+            .toMap(LinkedHashMap())
+        val managedFrontSniNat64Egresses = tlsFrontSniNat64Egresses.entries.asSequence()
+            .mapNotNull { (rawDomain, rawActivation) ->
+                val domain = DnsNames.normalize(rawDomain) ?: return@mapNotNull null
+                if (domain !in managedTlsFrontSniDomains) return@mapNotNull null
+                val activation = rawActivation.validatedOrNull() ?: return@mapNotNull null
+                domain to activation
+            }
+            .toMap(LinkedHashMap())
+        val managedConfiguredFrontSniNat64Domains = configuredTlsFrontSniNat64Domains.asSequence()
+            .mapNotNull(DnsNames::normalize)
+            .filter(managedTlsFrontSniDomains::containsKey)
+            .toSet()
         val managedNat64Domains = nat64FallbackEligibleDomains.asSequence()
             .mapNotNull(DnsNames::normalize)
             .filter(managedDomains::contains)
             .filter(managedEchConfigDomains::containsKey)
             .toSet()
+        val frontSniCandidates = managedTlsFrontSniDomains.values.asSequence()
+            .distinct()
+            .mapNotNull { frontSni ->
+                val endpoint = snapshot.plans[frontSni] ?: return@mapNotNull null
+                val candidates = endpoint.candidates.strictPreflightCandidates(now)
+                if (candidates.isEmpty()) null else frontSni to candidates
+            }
+            .toMap(LinkedHashMap())
         val routes = ArrayList<TlsTerminationRoute>()
         for (endpoint in snapshot.plans.values.sortedBy { it.domain }) {
             val domain = DnsNames.normalize(endpoint.domain) ?: continue
@@ -110,20 +167,17 @@ object TlsTerminationPlanner {
                     }.thenBy { it.address },
                 )
                 .toList()
-            val echCandidates = endpoint.candidates.asSequence()
-                .filter { candidate -> candidate.eligibleForStrictEchPreflight(now) }
-                .sortedWith(
-                    compareBy<EndpointCandidate> { if (it.usable(now)) 0 else 1 }
-                        // IPv4 remains the universal baseline. A previously proven usable IPv6
-                        // candidate still wins above; otherwise ECH preflight can fall back on the
-                        // current trusted IPv4 observation instead of an unroutable stale AAAA.
-                        .thenBy { if (IpAddresses.parseIpv4(it.address) != null) 0 else 1 }
-                        .thenBy { if (it.latencyMs > 0L) it.latencyMs else Long.MAX_VALUE }
-                        .thenBy { it.address },
-                )
-                .toList()
+            val echCandidates = endpoint.candidates.strictPreflightCandidates(now)
             val noSni = usableCandidates.firstOrNull(EndpointCandidate::noSniCapable)
             val useNat64 = nat64Fallback != null && domain in managedNat64Domains
+            // A rule-specific egress is an isolation boundary. If its live probe failed, do not
+            // silently send that platform through the global egress; leave FRONT_SNI unavailable
+            // and let independently verified strict routes (if any) be considered below.
+            val frontSniNat64 = if (domain in managedConfiguredFrontSniNat64Domains) {
+                managedFrontSniNat64Egresses[domain]
+            } else {
+                nat64Fallback
+            }
             if (noSni != null && !useNat64) {
                 routes += TlsTerminationRoute(
                     domain = domain,
@@ -134,6 +188,57 @@ object TlsTerminationPlanner {
                     upstreamAddress = noSni.address,
                 )
                 continue
+            }
+            val frontSni = managedTlsFrontSniDomains[domain]
+            if (
+                frontSni != null &&
+                frontSniNat64 != null &&
+                domain in managedReflectUpstreamDomains
+            ) {
+                routes += TlsTerminationRoute(
+                    domain = domain,
+                    includeSubdomains = domain in managedSuffixes,
+                    method = TlsTerminationMethod.FRONT_SNI,
+                    frontSni = frontSni,
+                    reflectUpstreamHost = true,
+                    verificationDomain = managedFrontSniProbeDomains[domain],
+                    nat64Prefix = frontSniNat64.prefix,
+                    nat64Operator = frontSniNat64.operator,
+                    nat64ExpectedAsn = frontSniNat64.expectedAsn,
+                    nat64ExpectedRegion = frontSniNat64.expectedRegion,
+                )
+                continue
+            }
+            val frontCandidate = if (frontSni != null && frontSniNat64 != null) {
+                // 优先使用前置名自身经过严格 DNS/TLS 观测的候选。业务域候选只能作为
+                // 锚点尚未准备好时的兼容兜底，最终仍须通过本机端到端握手才能发布。
+                stableFrontCandidate(
+                    candidates = frontSniCandidates[frontSni].orEmpty()
+                        .ifEmpty { echCandidates },
+                    key = frontSni,
+                )
+            } else {
+                null
+            }
+            if (frontCandidate != null && frontSni != null && frontSniNat64 != null) {
+                val synthesized = synthesizeNat64Address(
+                    frontSniNat64.prefix,
+                    frontCandidate.address,
+                )?.hostAddress
+                if (synthesized != null) {
+                    routes += TlsTerminationRoute(
+                        domain = domain,
+                        includeSubdomains = domain in managedSuffixes,
+                        method = TlsTerminationMethod.FRONT_SNI,
+                        upstreamAddress = synthesized,
+                        frontSni = frontSni,
+                        nat64Prefix = frontSniNat64.prefix,
+                        nat64Operator = frontSniNat64.operator,
+                        nat64ExpectedAsn = frontSniNat64.expectedAsn,
+                        nat64ExpectedRegion = frontSniNat64.expectedRegion,
+                    )
+                    continue
+                }
             }
             val echConfigDomain = managedEchConfigDomains[domain]
             if (echConfigDomain != null) {
@@ -201,6 +306,42 @@ private fun EndpointCandidate.eligibleForStrictEchPreflight(now: Long): Boolean 
         source == CandidateSource.GITHUB_META
 }
 
+private fun List<EndpointCandidate>.strictPreflightCandidates(
+    now: Long,
+): List<EndpointCandidate> = asSequence()
+    .filter { candidate -> candidate.eligibleForStrictEchPreflight(now) }
+    .sortedWith(
+        compareBy<EndpointCandidate> { if (it.usable(now)) 0 else 1 }
+            // IPv4 remains the universal baseline. A previously proven usable IPv6 candidate
+            // still wins above; otherwise preflight can use a trusted IPv4 observation.
+            .thenBy { if (IpAddresses.parseIpv4(it.address) != null) 0 else 1 }
+            .thenBy { if (it.latencyMs > 0L) it.latencyMs else Long.MAX_VALUE }
+            .thenBy { it.address },
+    )
+    .toList()
+
+/** 候选集合不变时跨快照保持稳定，避免仅 generation 变化就重启本机 TLS 终止器。 */
+private fun stableFrontCandidate(
+    candidates: List<EndpointCandidate>,
+    key: String,
+): EndpointCandidate? {
+    val ipv4 = candidates.filter { IpAddresses.parseIpv4(it.address) != null }
+    if (ipv4.isEmpty()) return null
+    val index = Math.floorMod(key.hashCode(), ipv4.size)
+    return ipv4[index]
+}
+
+/** Revalidate values at the runtime trust boundary even when they came from bundled rule assets. */
+private fun Nat64FallbackActivation.validatedOrNull(): Nat64FallbackActivation? =
+    Nat64FallbackConfig(
+        enabled = true,
+        prefix = prefix,
+        operator = operator,
+        expectedAsn = expectedAsn,
+        expectedRegion = expectedRegion,
+        riskAccepted = true,
+    ).activationOrNull()
+
 /** 运行时发布点；关闭/故障时原子清空，透明监听器立即回到不解密路径。 */
 object TlsTerminationRouteRegistry {
     private val active = AtomicReference(TlsTerminationPlan.EMPTY)
@@ -232,6 +373,14 @@ object SniGateConfigRenderer {
             .distinctBy { it.domain to it.includeSubdomains }
             // sni-gate 按 exact > wildcard > suffix 匹配；这里仍显式把专用精确路由写在
             // 通用后缀路由前，便于审计并兼容旧版本实现。
+            .sortedWith(compareBy<TlsTerminationRoute> { it.includeSubdomains }.thenBy { it.domain })
+        val frontSniRoutes = plan.routes
+            .filter {
+                it.method == TlsTerminationMethod.FRONT_SNI &&
+                    (it.upstreamAddress != null || it.reflectUpstreamHost) &&
+                    it.frontSni != null
+            }
+            .distinctBy { it.domain to it.includeSubdomains }
             .sortedWith(compareBy<TlsTerminationRoute> { it.includeSubdomains }.thenBy { it.domain })
         val echGroups = plan.routes
             .filter { it.method == TlsTerminationMethod.ECH }
@@ -292,6 +441,38 @@ object SniGateConfigRenderer {
             appendLine("addr = \"127.0.0.1:${SniGateRuntime.LOCAL_PORT}\"")
             appendLine("connect_timeout = \"3s\"")
             appendLine()
+
+            frontSniRoutes.forEachIndexed { index, route ->
+                val nat64Prefix = requireNotNull(normalizePublicNat64Prefix96(route.nat64Prefix)) {
+                    "FRONT_SNI requires a verified NAT64 /96"
+                }
+                val frontSni = requireNotNull(DnsNames.normalize(route.frontSni))
+                appendLine("  [[listener.route]]")
+                appendLine("  name = \"front-sni-$index\"")
+                appendLine("  type = \"tls\"")
+                val pattern = if (route.includeSubdomains) ".${route.domain}" else route.domain
+                appendLine("  match_sni = [\"${toml(pattern)}\"]")
+                if (route.reflectUpstreamHost) {
+                    require(route.upstreamAddress == null) {
+                        "reflecting FRONT_SNI must not pin an upstream address"
+                    }
+                    // 只反射拨号主机，端口固定为公网 HTTPS；若省略 upstream，sni-gate
+                    // 会继承本机监听端口 7444，造成递归回环。
+                    appendLine("  upstream = \"443\"")
+                    appendLine("  addr_resolver = \"@clean\"")
+                    appendLine("  address_family = \"ipv4\"")
+                    appendLine("  nat64_prefix = \"${toml(nat64Prefix)}\"")
+                } else {
+                    val upstreamAddress = requireNotNull(route.upstreamAddress)
+                    requireNotNull(IpAddresses.parseIpv6(upstreamAddress)) {
+                        "fixed FRONT_SNI requires a synthesized IPv6 upstream"
+                    }
+                    appendLine("  upstream = \"${toml(upstreamAddress.let(::upstream))}\"")
+                }
+                appendLine("  override_sni = \"${toml(frontSni)}\"")
+                appendLine("  fail = \"close\"")
+                appendLine()
+            }
 
             noSniRoutes.forEachIndexed { index, route ->
                 appendLine("  [[listener.route]]")

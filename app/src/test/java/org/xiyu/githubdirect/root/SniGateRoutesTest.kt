@@ -413,6 +413,177 @@ class SniGateRoutesTest {
     }
 
     @Test
+    fun `front SNI routes use the dynamic front-name anchor for exact and suffix assets`() {
+        val now = 4_000L
+        fun candidate(domain: String, address: String) = EndpointCandidate(
+            domain = domain,
+            address = address,
+            source = CandidateSource.WIRE_DOH,
+            fetchedAt = now,
+            expiresAt = now + 60_000,
+            latencyMs = 20,
+            capability = RouteCapability.UNUSABLE,
+            interceptOnly = true,
+        )
+        val snapshot = RouteSnapshot(
+            generation = 16,
+            createdAt = now,
+            expiresAt = now + 60_000,
+            plans = mapOf(
+                "g.cn" to EndpointPlan(
+                    "g.cn",
+                    "front-sni:g.cn",
+                    candidates = listOf(candidate("g.cn", "142.250.4.160")),
+                ),
+                "i.ytimg.com" to EndpointPlan(
+                    "i.ytimg.com",
+                    "youtube-images",
+                    candidates = listOf(candidate("i.ytimg.com", "142.250.21.119")),
+                ),
+                "ytimg.com" to EndpointPlan(
+                    "ytimg.com",
+                    "youtube-images",
+                    candidates = emptyList(),
+                ),
+                "ggpht.com" to EndpointPlan(
+                    "ggpht.com",
+                    "youtube-images",
+                    candidates = emptyList(),
+                ),
+            ),
+            metaCidrs = emptySet(),
+        )
+        val activation = Nat64FallbackActivation(
+            prefix = "2a01:4f8:c2c:123f:64:5:0:0/96",
+            operator = "Example NAT64",
+            expectedAsn = "AS24940",
+            expectedRegion = "FI",
+        )
+        val domains = setOf("i.ytimg.com", "ytimg.com", "ggpht.com")
+        val plan = TlsTerminationPlanner.plan(
+            snapshot = snapshot,
+            now = now,
+            enabledRelayDomains = domains,
+            enabledRelaySuffixes = setOf("ytimg.com", "ggpht.com"),
+            enabledTlsFrontSniDomains = domains.associateWith { "g.cn" },
+            nat64Fallback = activation,
+        )
+
+        val exact = plan.routeFor("i.ytimg.com") ?: error("exact image route missing")
+        val thumbnail = plan.routeFor("lh3.ytimg.com") ?: error("ytimg suffix route missing")
+        val avatar = plan.routeFor("yt3.ggpht.com") ?: error("ggpht suffix route missing")
+        assertTrue(plan.routes.all { it.method == TlsTerminationMethod.FRONT_SNI })
+        assertTrue(plan.routes.all { it.frontSni == "g.cn" })
+        assertEquals(exact.upstreamAddress, thumbnail.upstreamAddress)
+        assertEquals(exact.upstreamAddress, avatar.upstreamAddress)
+        assertEquals(
+            synthesizeNat64Address(activation.prefix, "142.250.4.160")?.hostAddress,
+            exact.upstreamAddress,
+        )
+
+        val rendered = SniGateConfigRenderer.render(
+            plan,
+            SniGateConfigPaths("/private/ca.crt", "/private/ca.key", "/private/certs"),
+        )
+        assertTrue(rendered.contains("match_sni = [\"i.ytimg.com\"]"))
+        assertTrue(rendered.contains("match_sni = [\".ytimg.com\"]"))
+        assertTrue(rendered.contains("match_sni = [\".ggpht.com\"]"))
+        assertEquals(3, Regex("override_sni = \"g.cn\"").findAll(rendered).count())
+    }
+
+    @Test
+    fun `reflected front SNI routes resolve each media host through their verified egress`() {
+        val now = 5_000L
+        val root = "googlevideo.com"
+        val probe = "redirector.googlevideo.com"
+        val activation = Nat64FallbackActivation(
+            prefix = "2a01:4f9:c010:3f02:64:0:0:0/96",
+            operator = "Example Helsinki NAT64",
+            expectedAsn = "AS24940",
+            expectedRegion = "FI/HEL",
+        )
+        val snapshot = RouteSnapshot(
+            generation = 17,
+            createdAt = now,
+            expiresAt = now + 60_000,
+            plans = mapOf(
+                root to EndpointPlan(root, "youtube-stream", candidates = emptyList()),
+            ),
+            metaCidrs = emptySet(),
+        )
+
+        val plan = TlsTerminationPlanner.plan(
+            snapshot = snapshot,
+            now = now,
+            enabledRelayDomains = setOf(root),
+            enabledRelaySuffixes = setOf(root),
+            enabledTlsFrontSniDomains = mapOf(root to "xn--ngstr-lra8j.com"),
+            tlsFrontSniReflectUpstreamDomains = setOf(root),
+            tlsFrontSniProbeDomains = mapOf(root to probe),
+            tlsFrontSniNat64Egresses = mapOf(root to activation),
+            configuredTlsFrontSniNat64Domains = setOf(root),
+        )
+
+        val route = plan.routeFor("r1---sn-a5meknzl.googlevideo.com")
+            ?: error("reflected media route missing")
+        assertEquals(TlsTerminationMethod.FRONT_SNI, route.method)
+        assertTrue(route.reflectUpstreamHost)
+        assertEquals(null, route.upstreamAddress)
+        assertEquals(probe, route.verificationDomain)
+        assertEquals(listOf(probe), verificationDomainsFor(route))
+
+        val rendered = SniGateConfigRenderer.render(
+            plan,
+            SniGateConfigPaths("/private/ca.crt", "/private/ca.key", "/private/certs"),
+        )
+        assertTrue(rendered.contains("match_sni = [\".googlevideo.com\"]"))
+        assertTrue(rendered.contains("upstream = \"443\""))
+        assertTrue(rendered.contains("addr_resolver = \"@clean\""))
+        assertTrue(rendered.contains("address_family = \"ipv4\""))
+        assertTrue(rendered.contains("nat64_prefix = \"${activation.prefix}\""))
+        assertTrue(rendered.contains("override_sni = \"xn--ngstr-lra8j.com\""))
+    }
+
+    @Test
+    fun `failed dedicated front SNI egress never falls back to the global egress`() {
+        val now = 6_000L
+        val root = "googlevideo.com"
+        val global = Nat64FallbackActivation(
+            prefix = "2602:fc59:20:64:0:0:0:0/96",
+            operator = "Example Global NAT64",
+            expectedAsn = "AS19625",
+            expectedRegion = "US/ABQ",
+        )
+        val snapshot = RouteSnapshot(
+            generation = 18,
+            createdAt = now,
+            expiresAt = now + 60_000,
+            plans = mapOf(
+                root to EndpointPlan(root, "youtube-stream", candidates = emptyList()),
+            ),
+            metaCidrs = emptySet(),
+        )
+
+        val plan = TlsTerminationPlanner.plan(
+            snapshot = snapshot,
+            now = now,
+            enabledRelayDomains = setOf(root),
+            enabledRelaySuffixes = setOf(root),
+            enabledTlsFrontSniDomains = mapOf(root to "xn--ngstr-lra8j.com"),
+            tlsFrontSniReflectUpstreamDomains = setOf(root),
+            tlsFrontSniProbeDomains = mapOf(root to "redirector.googlevideo.com"),
+            tlsFrontSniNat64Egresses = emptyMap(),
+            configuredTlsFrontSniNat64Domains = setOf(root),
+            nat64Fallback = global,
+        )
+
+        val route = plan.routeFor("r1---sn-a5meknzl.googlevideo.com")
+            ?: error("strict fallback route missing")
+        assertFalse(route.method == TlsTerminationMethod.FRONT_SNI)
+        assertEquals(null, route.nat64Prefix)
+    }
+
+    @Test
     fun `planner covers newly observed Discord subdomains through a bounded suffix route`() {
         val now = 1_000L
         val root = "discord.gg"

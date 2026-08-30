@@ -220,6 +220,44 @@ class RootBackendTest {
     }
 
     @Test
+    fun `NAT64 IPv6策略回落参与事务安装校验与guardian清理`() {
+        val executor = ScriptedExecutor()
+        val probe = FakeProbe(goodCaps().copy(ipv6UidPolicyRouting = true))
+        val configured: (Int) -> FirewallRules = { uid ->
+            FirewallRules(
+                selfUid = uid,
+                scopeUids = setOf(10311),
+                scopeInclude = true,
+                directDestinations = setOf("104.18.41.241/32"),
+                enableRealIpRedirect = true,
+                nat64Ipv6FallbackDestinations = setOf("2606:4700:4400::6812:29f1/128"),
+                enableIpv6UidPolicyFallback = true,
+            )
+        }
+        val rules = configured(10123)
+        val verification = rules.buildInstallScript() + "\n" +
+            "10500: from all uidrange 10311-10311 lookup 52123\n" +
+            "unreachable 2606:4700:4400::6812:29f1 dev lo metric 1024\n"
+        executor.fakeVerificationWith(verification)
+
+        val backend = backend(executor, probe, rulesBuilder = configured)
+        assertTrue(backend.start({ null }, { null }))
+
+        assertTrue(backend.nat64Ipv6FallbackActive)
+        assertEquals(1, backend.nat64Ipv6FallbackDestinationCount)
+        assertTrue(
+            executor.scripts.any {
+                it.startsWith("set -e\nip -6 route add unreachable") &&
+                    it.contains("uidrange 10311-10311 lookup 52123")
+            },
+        )
+        val guardian = executor.scripts.first { it.contains("nohup sh -c") }
+        assertTrue(guardian.contains("ip -6 rule del table 52123"))
+        assertTrue(guardian.contains("ip -6 route flush table 52123"))
+        assertTrue(backend.healthCheck())
+    }
+
+    @Test
     fun `scope切换在原子提交后才清理旧共享子链`() {
         val executor = ScriptedExecutor()
         val probe = FakeProbe(goodCaps())

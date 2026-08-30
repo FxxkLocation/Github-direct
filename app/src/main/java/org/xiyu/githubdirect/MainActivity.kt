@@ -323,7 +323,10 @@ class MainActivity : Activity(), App.ServiceStateListener {
                 refreshNat64Status()
                 return@setOnCheckedChangeListener
             }
-            if (DirectEngine.enabledNat64FallbackDomains().isEmpty()) {
+            if (
+                DirectEngine.enabledNat64FallbackDomains().isEmpty() &&
+                DirectEngine.enabledTlsFrontSniDomains().isEmpty()
+            ) {
                 dnsResultText.text = getString(R.string.nat64_requires_openai)
                 refreshNat64Status()
                 return@setOnCheckedChangeListener
@@ -521,6 +524,10 @@ class MainActivity : Activity(), App.ServiceStateListener {
     private fun showNat64ConfigDialog(enableAfterSave: Boolean) {
         val store = DirectEngine.settings() ?: return
         val current = store.nat64FallbackConfig()
+        val formValue = current.takeIf {
+            it.prefix.isNotBlank() || it.operator.isNotBlank() ||
+                it.expectedAsn.isNotBlank() || it.expectedRegion.isNotBlank()
+        } ?: Nat64FallbackConfig.RECOMMENDED_OPENAI_US
         val padding = (20 * resources.displayMetrics.density).toInt()
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -533,10 +540,10 @@ class MainActivity : Activity(), App.ServiceStateListener {
             edit.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
             container.addView(edit)
         }
-        val prefix = field(R.string.nat64_prefix_hint, current.prefix)
-        val operator = field(R.string.nat64_operator_hint, current.operator)
-        val asn = field(R.string.nat64_asn_hint, current.expectedAsn)
-        val region = field(R.string.nat64_region_hint, current.expectedRegion)
+        val prefix = field(R.string.nat64_prefix_hint, formValue.prefix)
+        val operator = field(R.string.nat64_operator_hint, formValue.operator)
+        val asn = field(R.string.nat64_asn_hint, formValue.expectedAsn)
+        val region = field(R.string.nat64_region_hint, formValue.expectedRegion)
         val dialog = AlertDialog.Builder(this)
             .setTitle(getString(R.string.nat64_config_title))
             .setView(container)
@@ -714,9 +721,10 @@ class MainActivity : Activity(), App.ServiceStateListener {
         val label = when (status.state) {
             SystemCaState.NOT_GENERATED -> "未生成"
             SystemCaState.GENERATED -> "已生成，未安装"
-            SystemCaState.TRUSTED -> "浏览器用户信任已生效"
+            SystemCaState.TRUSTED -> "系统/浏览器信任已生效"
+            SystemCaState.USER_ONLY -> "仅浏览器用户信任"
             SystemCaState.SYSTEM_ONLY -> "仅系统信任（浏览器不兼容）"
-            SystemCaState.SYSTEM_USER_CONFLICT -> "系统/用户证书冲突，需重启"
+            SystemCaState.SYSTEM_USER_CONFLICT -> "系统已生效，待移除用户副本"
             SystemCaState.BROWSER_POLICY_REQUIRED -> "Edge CA 策略未生效"
             SystemCaState.BROWSER_POLICY_UNSUPPORTED -> "Edge 版本不支持 CA 策略"
             SystemCaState.STAGED_REBOOT_REQUIRED -> "已暂存，等待重启"
