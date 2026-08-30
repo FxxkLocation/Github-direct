@@ -3,8 +3,11 @@ package org.xiyu.githubdirect.core.dns
 import java.io.ByteArrayOutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Future
 import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -84,7 +87,8 @@ class WireDohClient @JvmOverloads constructor(
     /**
      * raw wire DoH 查询：发 primary，hedge 窗口未完成则发 secondary；
      * 第一个成功响应胜；全部失败 → null。
-     * 实现：每次查询最多 2 个短命工作线程 + 阻塞队列收结果。
+     * 实现：提交到进程级有界工作池 + 阻塞队列收结果。队列满时调用线程承担任务，
+     * 对刷新源施加背压，禁止按“域名 × A/AAAA × resolver”无界创建 4MB Android 线程。
      */
     fun post(rawQuery: ByteArray, timeoutMs: Int): ByteArray? {
         if (rawQuery.size < 12 || timeoutMs <= 0) return null
@@ -92,7 +96,7 @@ class WireDohClient @JvmOverloads constructor(
         if (candidates.isEmpty()) return null
 
         val queue = LinkedBlockingQueue<Pair<WireEndpoint, ByteArray?>>()
-        val threads = ArrayList<Thread>()
+        val futures = ArrayList<Future<*>>()
         val openSockets = ConcurrentHashMap.newKeySet<Socket>()
         val deadline = clock() + timeoutMs
         var hedged = false
@@ -100,7 +104,7 @@ class WireDohClient @JvmOverloads constructor(
         val submitted = LinkedHashSet<WireEndpoint>()
         val completed = HashSet<WireEndpoint>()
 
-        submit(candidates[0], rawQuery, deadline, queue, threads, openSockets)
+        submit(candidates[0], rawQuery, deadline, queue, futures, openSockets)
         submitted += candidates[0]
 
         while (true) {
@@ -123,14 +127,14 @@ class WireDohClient @JvmOverloads constructor(
                 completed += endpoint
                 if (body != null) {
                     recordSuccess(endpoint)
-                    cancelAll(threads, openSockets)
+                    cancelAll(futures, openSockets)
                     return body
                 }
                 recordFailure(endpoint)
                 // primary 快速失败 → 立即补发 secondary
                 if (!hedged && candidates.size > 1) {
                     hedged = true
-                    submit(candidates[1], rawQuery, deadline, queue, threads, openSockets)
+                    submit(candidates[1], rawQuery, deadline, queue, futures, openSockets)
                     submitted += candidates[1]
                     continue
                 }
@@ -140,7 +144,7 @@ class WireDohClient @JvmOverloads constructor(
             // hedge 窗口超时 → 发 secondary
             if (!hedged && candidates.size > 1) {
                 hedged = true
-                submit(candidates[1], rawQuery, deadline, queue, threads, openSockets)
+                submit(candidates[1], rawQuery, deadline, queue, futures, openSockets)
                 submitted += candidates[1]
                 continue
             }
@@ -150,7 +154,7 @@ class WireDohClient @JvmOverloads constructor(
             // 截止前未返回的 endpoint 也必须累计失败，否则永久卡住的 primary 每次都被首选。
             (submitted - completed).forEach(::recordFailure)
         }
-        cancelAll(threads, openSockets)
+        cancelAll(futures, openSockets)
         if (interrupted) Thread.currentThread().interrupt()
         return null
     }
@@ -179,7 +183,7 @@ class WireDohClient @JvmOverloads constructor(
         if (candidates.isEmpty()) return emptyList()
 
         val queue = LinkedBlockingQueue<Pair<WireEndpoint, ByteArray?>>()
-        val threads = ArrayList<Thread>(candidates.size)
+        val futures = ArrayList<Future<*>>(candidates.size)
         val openSockets = ConcurrentHashMap.newKeySet<Socket>()
         val deadline = clock() + timeoutMs
         val completed = HashSet<WireEndpoint>()
@@ -189,7 +193,7 @@ class WireDohClient @JvmOverloads constructor(
         var trustedCount = 0
         var observerCount = 0
 
-        candidates.forEach { submit(it, rawQuery, deadline, queue, threads, openSockets) }
+        candidates.forEach { submit(it, rawQuery, deadline, queue, futures, openSockets) }
         var interrupted = false
         while (
             completed.size < candidates.size &&
@@ -226,7 +230,7 @@ class WireDohClient @JvmOverloads constructor(
         ) {
             (candidates - completed).forEach(::recordFailure)
         }
-        cancelAll(threads, openSockets)
+        cancelAll(futures, openSockets)
         if (interrupted) Thread.currentThread().interrupt()
         return responses
     }
@@ -318,20 +322,24 @@ class WireDohClient @JvmOverloads constructor(
         rawQuery: ByteArray,
         deadline: Long,
         queue: LinkedBlockingQueue<Pair<WireEndpoint, ByteArray?>>,
-        threads: MutableList<Thread>,
+        futures: MutableList<Future<*>>,
         openSockets: MutableSet<Socket>,
     ) {
-        val t = Thread({
+        val task = Runnable {
             val body = try {
                 wireRequest(endpoint, rawQuery, deadline, openSockets)
-            } catch (_: Exception) {
+            } catch (_: Throwable) {
                 null
             }
             queue.offer(endpoint to body)
-        }, "WireDoh-${endpoint.hostname}")
-        t.isDaemon = true
-        threads.add(t)
-        t.start()
+        }
+        try {
+            futures += QUERY_EXECUTOR.submit(task)
+        } catch (_: Throwable) {
+            // 即使系统已处于线程/内存压力，也必须把该端点作为失败结果交还调用方，
+            // 不能让 Error 逃逸并杀死 Root 前台服务进程。
+            queue.offer(endpoint to null)
+        }
     }
 
     private fun wireRequest(
@@ -403,18 +411,37 @@ class WireDohClient @JvmOverloads constructor(
         }
     }
 
-    /** 成功返回后取消在途线程（关 socket 解阻塞 + interrupt）。 */
-    private fun cancelAll(threads: List<Thread>, openSockets: MutableSet<Socket>) {
+    /** 成功返回或 deadline 到达后取消在途任务（先关 socket 解阻塞，再 interrupt）。 */
+    private fun cancelAll(futures: List<Future<*>>, openSockets: MutableSet<Socket>) {
         for (s in openSockets) {
             try {
                 s.close()
             } catch (_: Exception) {
             }
         }
-        for (t in threads) t.interrupt()
+        for (future in futures) future.cancel(true)
     }
 
     companion object {
+
+        private val QUERY_THREAD_ID = AtomicInteger()
+        private val QUERY_EXECUTOR = ThreadPoolExecutor(
+            QUERY_WORKERS,
+            QUERY_WORKERS,
+            QUERY_KEEP_ALIVE_SEC,
+            TimeUnit.SECONDS,
+            ArrayBlockingQueue(QUERY_QUEUE_CAPACITY),
+            { runnable ->
+                Thread(
+                    null,
+                    runnable,
+                    "GHD-WireDoH-${QUERY_THREAD_ID.incrementAndGet()}",
+                    NETWORK_THREAD_STACK_BYTES,
+                ).apply { isDaemon = true }
+            },
+            // 高压时同步执行会自然降低上层 source 并发；任务仍受各自 deadline 限制。
+            ThreadPoolExecutor.CallerRunsPolicy(),
+        ).apply { allowCoreThreadTimeOut(true) }
 
         /**
          * 固定 IP + 严格证书端点表。
@@ -594,5 +621,9 @@ class WireDohClient @JvmOverloads constructor(
         }
 
         private const val MAX_HTTP_RESPONSE_BYTES = 128 * 1024
+        private const val QUERY_WORKERS = 8
+        private const val QUERY_QUEUE_CAPACITY = 32
+        private const val QUERY_KEEP_ALIVE_SEC = 30L
+        private const val NETWORK_THREAD_STACK_BYTES = 512L * 1024L
     }
 }

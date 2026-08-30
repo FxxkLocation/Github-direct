@@ -49,6 +49,7 @@ object AdaptiveRouteCatalog {
         isEnabled: (String) -> Boolean,
     ): List<AdaptiveRouteTarget> {
         val targets = LinkedHashMap<String, AdaptiveRouteTarget>()
+        val frontSniAnchors = LinkedHashMap<String, FrontSniAnchor>()
         profiles.asSequence()
             .filter { isEnabled(it.id) }
             .sortedWith(compareByDescending<ServiceProfile> { it.priority }.thenBy { it.id })
@@ -83,6 +84,18 @@ object AdaptiveRouteCatalog {
                         semanticProbe = rule.semanticProbe,
                         candidatePoolScope = rule.candidatePoolScope,
                     )
+                    if (rule.nat64FallbackEligible) {
+                        rule.tlsFrontSni?.let(DnsNames::normalize)?.let { frontSni ->
+                            frontSniAnchors.putIfAbsent(
+                                frontSni,
+                                FrontSniAnchor(
+                                    serviceId = profile.id,
+                                    domain = frontSni,
+                                    candidatePool = rule.candidatePool,
+                                ),
+                            )
+                        }
+                    }
                     val existing = targets[domain]
                     if (existing == null) {
                         targets[domain] = candidate
@@ -99,7 +112,25 @@ object AdaptiveRouteCatalog {
                     }
                 }
             }
-        return targets.values.take(MAX_TARGETS)
+        // FRONT_SNI 的上游必须由前置名自身的严格 DNS/TLS 观测产生。业务域的某个 VIP
+        // 能校验业务证书，并不代表同一 VIP 也会为前置名返回正确证书。锚点只进入候选
+        // 快照，不进入 RuleRegistry，因此不会把前置名本身加入透明接管边界。
+        val ordered = LinkedHashMap<String, AdaptiveRouteTarget>()
+        // 控制面锚点优先进入固定刷新预算，避免大量业务后缀让前置名长期排在截止线后。
+        frontSniAnchors.values.forEach { anchor ->
+            if (anchor.domain in targets) return@forEach
+            ordered[anchor.domain] = AdaptiveRouteTarget(
+                serviceId = anchor.serviceId,
+                domain = anchor.domain,
+                endpointGroup = "$CONTROL_PLANE_FRONT_SNI_GROUP_PREFIX${anchor.domain}",
+                includeSubdomains = false,
+                candidatePool = anchor.candidatePool,
+                probeDomain = anchor.domain,
+                candidatePoolScope = "$CONTROL_PLANE_FRONT_SNI_GROUP_PREFIX${anchor.domain}",
+            )
+        }
+        targets.forEach { (domain, target) -> ordered.putIfAbsent(domain, target) }
+        return ordered.values.take(MAX_TARGETS)
     }
 
     fun filterSnapshot(
@@ -139,6 +170,12 @@ object AdaptiveRouteCatalog {
     private const val GITHUB_META_REF = "github-meta"
     private const val DEFAULT_GITHUB_META_GROUP = "web"
     const val MAX_TARGETS = 96
+
+    private data class FrontSniAnchor(
+        val serviceId: String,
+        val domain: String,
+        val candidatePool: String?,
+    )
 }
 
 internal fun suffixProbeDomain(root: String): String? =

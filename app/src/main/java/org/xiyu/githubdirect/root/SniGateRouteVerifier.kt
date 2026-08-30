@@ -259,6 +259,15 @@ internal class RouteVerificationDeadline(timeoutMs: Long) : Closeable {
  */
 internal fun verificationDomainsFor(route: TlsTerminationRoute): List<String> {
     val domain = requireNotNull(DnsNames.normalize(route.domain)) { "invalid route domain" }
+    route.verificationDomain?.let { rawProbe ->
+        val probe = requireNotNull(DnsNames.normalize(rawProbe)) {
+            "invalid route verification domain"
+        }
+        val insideBoundary = probe == domain ||
+            (route.includeSubdomains && probe.endsWith(".$domain"))
+        require(insideBoundary) { "verification domain escapes route boundary" }
+        return listOf(probe)
+    }
     if (!route.includeSubdomains) return listOf(domain)
     if (route.method == TlsTerminationMethod.ECH) return listOf(domain)
     val child = requireNotNull(suffixProbeDomain(domain)) {

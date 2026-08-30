@@ -10,11 +10,13 @@ import java.io.File
 enum class SystemCaState {
     NOT_GENERATED,
     GENERATED,
-    /** Browser-safe user trust is present and the same DER is absent from system roots. */
+    /** System/APEX trust is active and every selected browser policy that is required is present. */
     TRUSTED,
+    /** Browser navigation works, but Android MediaHTTP/native app stacks cannot trust the CA. */
+    USER_ONLY,
     /** The CA exists only as a system root; Chromium-family built-in verifiers may ignore it. */
     SYSTEM_ONLY,
-    /** The same DER is in user and system stores; Edge 151 rejects this duplicate layout. */
+    /** The same DER is in user and system stores; the installer must remove the user duplicate. */
     SYSTEM_USER_CONFLICT,
     /** Platform user trust exists, but selected Edge lacks the CA + scoped-DNS policy bundle. */
     BROWSER_POLICY_REQUIRED,
@@ -46,10 +48,10 @@ data class SystemCaOperation(
 /**
  * Installs a per-device public CA without ever copying its private key.
  *
- * Browser mode writes DER through Conscrypt's TrustedCertificateStore and verifies it through
- * AndroidCAStore, matching Chromium's user-root enumeration. The legacy Magisk/KernelSU system
- * module implementation is retained for explicit app compatibility, but the same certificate is
- * never considered browser-ready while it is duplicated in the system/APEX store.
+ * Android app/media stacks receive the public DER through a scoped Magisk/KernelSU system module.
+ * Selected Edge receives the same DER through its managed CACertificates policy. The old user-root
+ * copy is removed only after system trust is active, so the same DER is never left duplicated in
+ * Android's user and system stores. The per-device private key never leaves app-private storage.
  */
 class AndroidSystemCaInstaller(
     context: Context,
@@ -92,33 +94,39 @@ class AndroidSystemCaInstaller(
         val systemActive = system.systemActive
         val state = when {
             user.present && systemActive -> SystemCaState.SYSTEM_USER_CONFLICT
+            systemActive && policyRequired && !policySupported ->
+                SystemCaState.BROWSER_POLICY_UNSUPPORTED
+            systemActive && policyRequired && !browserPolicy.present ->
+                SystemCaState.BROWSER_POLICY_REQUIRED
+            system.state == SystemCaState.REMOVE_PENDING -> SystemCaState.REMOVE_PENDING
+            systemActive -> SystemCaState.TRUSTED
+            system.state == SystemCaState.STAGED_REBOOT_REQUIRED ->
+                SystemCaState.STAGED_REBOOT_REQUIRED
             user.present && policyRequired && !policySupported ->
                 SystemCaState.BROWSER_POLICY_UNSUPPORTED
             user.present && policyRequired && !browserPolicy.present ->
                 SystemCaState.BROWSER_POLICY_REQUIRED
-            user.present -> SystemCaState.TRUSTED
-            system.state == SystemCaState.REMOVE_PENDING -> SystemCaState.REMOVE_PENDING
-            systemActive -> SystemCaState.SYSTEM_ONLY
-            system.state == SystemCaState.STAGED_REBOOT_REQUIRED ->
-                SystemCaState.STAGED_REBOOT_REQUIRED
+            user.present -> SystemCaState.USER_ONLY
             else -> SystemCaState.GENERATED
         }
         val detail = when (state) {
             SystemCaState.TRUSTED ->
                 buildString {
-                    append("浏览器用户信任已生效（${user.alias}，AndroidCAStore 已验证）")
+                    append("系统/APEX 信任已生效，可供 Android 媒体与应用网络栈使用")
                     if (policyRequired) append("；Edge CA 与受管 DNS 策略已验证")
                 }
+            SystemCaState.USER_ONLY ->
+                "仅浏览器用户信任已生效（${user.alias}）；Android 媒体/应用网络栈仍不信任"
             SystemCaState.SYSTEM_ONLY ->
                 "仅系统/APEX 信任已生效；Chromium 系浏览器不会把它当作用户根"
             SystemCaState.SYSTEM_USER_CONFLICT ->
-                "用户 CA 已安装，但同一证书仍在系统/APEX 根库；需移除旧系统模块并重启"
+                "系统/APEX 信任已生效，但同一证书仍在用户信任库；请再次执行安装以精确移除用户副本"
             SystemCaState.BROWSER_POLICY_REQUIRED ->
-                "用户 CA 已安装，但所选 Edge 尚未载入 CA/受管 DNS 策略；请再次执行安装"
+                "系统 CA 已安装，但所选 Edge 尚未载入 CA/受管 DNS 策略；请再次执行安装"
             SystemCaState.BROWSER_POLICY_UNSUPPORTED ->
                 "所选 Edge 版本低于 147，不支持完整 Android CA/DNS 策略；已阻止 TLS 终止"
             SystemCaState.STAGED_REBOOT_REQUIRED ->
-                "旧系统 CA 模块仍在暂存；切换浏览器模式前需移除并重启"
+                "系统 CA 模块已暂存；重启后再次执行安装以完成用户副本迁移"
             SystemCaState.REMOVE_PENDING ->
                 "旧系统 CA 模块已排队移除；重启后可仅保留浏览器用户 CA"
             else -> "每设备 CA 已生成，尚未安装到浏览器用户信任库"
@@ -190,7 +198,7 @@ class AndroidSystemCaInstaller(
                 true,
                 before,
                 rebootRequired = false,
-                detail = "浏览器用户 CA 已安装并由 AndroidCAStore 验证",
+                detail = "系统/APEX CA 与所需浏览器策略均已验证",
             )
             SystemCaState.FOREIGN_MODULE ->
                 return SystemCaOperation(false, before, false, before.detail)
@@ -218,17 +226,6 @@ class AndroidSystemCaInstaller(
             return SystemCaOperation(false, failed, false, failed.detail)
         }
 
-        val userInstall = runKeyChain("install", ca)
-        if (!userInstall.ok || !userInstall.present) {
-            val failed = SystemCaStatus(
-                SystemCaState.ERROR,
-                ca.fingerprintSha256,
-                "用户 CA 安装失败：${userInstall.detail}",
-            )
-            return SystemCaOperation(false, failed, false, failed.detail)
-        }
-        notifyTrustStoreChanged()
-
         if (policyRequired) {
             val policyInstall = runBrowserPolicy("install", ca)
             if (!policyInstall.ok || !policyInstall.present) {
@@ -236,53 +233,54 @@ class AndroidSystemCaInstaller(
                     SystemCaState.ERROR,
                     ca.fingerprintSha256,
                     "Edge CA/DNS 策略安装失败：${policyInstall.detail}",
-                    userTrusted = true,
+                    userTrusted = before.userTrusted,
                     browserPolicyRequired = true,
                 )
                 return SystemCaOperation(false, failed, false, failed.detail)
             }
         }
 
-        // Browser verifiers must not see the exact same DER as both a system and a user root.
-        // Queue removal of this app's legacy system module. Do not unmount a shared APEX view in
-        // the current boot: another root module may be layered above it.
-        val systemBefore = systemStatus(ca)
-        val queueRemoval = if (systemBefore.state in setOf(
-                SystemCaState.TRUSTED,
-                SystemCaState.STAGED_REBOOT_REQUIRED,
-                SystemCaState.REMOVE_PENDING,
+        val systemInstall = installSystemForApps(ca)
+        if (!systemInstall.success) return systemInstall
+
+        // Keep the current user root until system/APEX trust is visible. This preserves browser
+        // connectivity when a root implementation cannot inject the current boot namespace and
+        // needs one reboot. Calling install again after reboot completes the exact migration.
+        val systemAfter = systemStatus(ca)
+        if (!systemAfter.systemActive) {
+            val staged = status(ca)
+            return SystemCaOperation(
+                success = true,
+                status = staged,
+                rebootRequired = true,
+                detail = "系统 CA 模块已暂存；重启后再次执行安装以移除旧用户 CA 副本",
             )
-        ) {
-            shell.execTrustedScript(removeScript(), timeoutSec = 6)
-        } else {
-            RootShell.Result(0, "", "", timedOut = false)
-        }
-        if (!queueRemoval.ok) {
-            val failed = SystemCaStatus(
-                SystemCaState.ERROR,
-                ca.fingerprintSha256,
-                "用户 CA 已写入，但旧系统模块无法排队移除：${queueRemoval.diagnosticSummary()}",
-            )
-            return SystemCaOperation(false, failed, true, failed.detail)
         }
 
-        val after = status(ca)
-        val rebootRequired = after.state == SystemCaState.SYSTEM_USER_CONFLICT ||
-            after.state == SystemCaState.REMOVE_PENDING ||
-            after.state == SystemCaState.STAGED_REBOOT_REQUIRED
-        val detail = when (after.state) {
-            SystemCaState.TRUSTED ->
-                "浏览器用户 CA 与所需浏览器策略已安装；私钥仍仅位于应用私有目录"
-            SystemCaState.SYSTEM_USER_CONFLICT ->
-                "浏览器用户 CA 已安装，旧系统/APEX 副本已排队移除；重启后生效"
-            else -> after.detail
+        val userRemoval = runKeyChain("remove", ca)
+        if (!userRemoval.ok || userRemoval.present) {
+            val failed = SystemCaStatus(
+                SystemCaState.SYSTEM_USER_CONFLICT,
+                ca.fingerprintSha256,
+                "系统信任已生效，但旧用户 CA 无法精确移除：${userRemoval.detail}",
+                systemActive = true,
+                userTrusted = true,
+                browserPolicyRequired = policyRequired,
+                browserPolicyTrusted = policyRequired,
+            )
+            return SystemCaOperation(false, failed, false, failed.detail)
         }
+        notifyTrustStoreChanged()
+        val after = status(ca)
         return SystemCaOperation(
-            success = after.state == SystemCaState.TRUSTED ||
-                after.state == SystemCaState.SYSTEM_USER_CONFLICT,
+            success = after.state == SystemCaState.TRUSTED,
             status = after,
-            rebootRequired = rebootRequired,
-            detail = detail,
+            rebootRequired = false,
+            detail = if (after.state == SystemCaState.TRUSTED) {
+                "每设备 CA 已进入系统/APEX 信任，Edge 策略已就绪，旧用户副本已移除；私钥仍仅位于应用私有目录"
+            } else {
+                after.detail
+            },
         )
     }
 
@@ -293,9 +291,6 @@ class AndroidSystemCaInstaller(
         when (before.state) {
             SystemCaState.TRUSTED -> return SystemCaOperation(
                 true, before, rebootRequired = false, detail = "CA 已受系统信任",
-            )
-            SystemCaState.STAGED_REBOOT_REQUIRED -> return SystemCaOperation(
-                true, before, rebootRequired = true, detail = before.detail,
             )
             SystemCaState.FOREIGN_MODULE -> return SystemCaOperation(
                 false, before, rebootRequired = false, detail = before.detail,
@@ -335,7 +330,9 @@ class AndroidSystemCaInstaller(
             return SystemCaOperation(false, failed, false, "Root 模块安装失败：${failed.detail}")
         }
 
-        // 当前启动周期尽力注入 PID 1 mount namespace；失败不撤销持久模块，重启仍会重试。
+        // 同时注入 PID 1 与 Zygote mount namespace。只更新 PID 1 不会传播到已经
+        // unshare 的 Zygote，之后启动的浏览器/媒体进程仍看不到 Conscrypt CA。
+        // 失败不撤销持久模块，重启时 post-fs-data/service 会重试。
         val immediate = shell.execTrustedScript(immediateInjectScript(), timeoutSec = 12)
         val after = systemStatus(ca)
         val trustedNow = after.state == SystemCaState.TRUSTED
@@ -548,14 +545,25 @@ class AndroidSystemCaInstaller(
         val moduleCert = "$MODULE_DIR/system/etc/security/cacerts/${ca.androidFileName}"
         val apexCert = "/apex/com.android.conscrypt/cacerts/${ca.androidFileName}"
         val legacyCert = "/system/etc/security/cacerts/${ca.androidFileName}"
+        fun trustedViewProbe(target: String): String =
+            "[ -f ${quote(target)} ] && cmp -s ${quote(moduleCert)} ${quote(target)}"
+
         return buildString {
             appendLine("module=0; owned=0; staged=0; remove=0; apex=0; legacy=0")
             appendLine("[ -e ${quote(MODULE_DIR)} ] && module=1")
             appendLine("[ -f ${quote("$MODULE_DIR/$OWNERSHIP_MARKER")} ] && owned=1")
             appendLine("[ -f ${quote("$MODULE_DIR/remove")} ] && remove=1")
             appendLine("[ -f ${quote(moduleCert)} ] && cmp -s ${quote(ca.file.absolutePath)} ${quote(moduleCert)} && staged=1")
-            appendLine("[ -f ${quote(apexCert)} ] && cmp -s ${quote(ca.file.absolutePath)} ${quote(apexCert)} && apex=1")
-            appendLine("[ -f ${quote(legacyCert)} ] && cmp -s ${quote(ca.file.absolutePath)} ${quote(legacyCert)} && legacy=1")
+            appendLine("if [ \"\$staged\" = 1 ]; then")
+            // Trust must be visible in the calling app's inherited Zygote namespace. Seeing the
+            // bind only from PID 1 is insufficient because MediaHTTPConnection runs in-app.
+            appendLine("  if ${trustedViewProbe(apexCert)}; then")
+            appendLine("    apex=1")
+            appendLine("  fi")
+            appendLine("  if ${trustedViewProbe(legacyCert)}; then")
+            appendLine("    legacy=1")
+            appendLine("  fi")
+            appendLine("fi")
             appendLine("echo module=\$module")
             appendLine("echo owned=\$owned")
             appendLine("echo staged=\$staged")
@@ -578,18 +586,18 @@ class AndroidSystemCaInstaller(
         appendLine("chmod 0755 ${quote(MODULE_STAGE_DIR)}/post-fs-data.sh ${quote(MODULE_STAGE_DIR)}/service.sh ${quote(MODULE_STAGE_DIR)}/inject-apex.sh ${quote(MODULE_STAGE_DIR)}/uninstall.sh")
         appendLine("chmod 0600 ${quote("$MODULE_STAGE_DIR/$OWNERSHIP_MARKER")}")
         appendLine("rm -f ${quote(MODULE_STAGE_DIR)}/remove ${quote(MODULE_STAGE_DIR)}/disable")
+        // v1.0 kept its tmpfs source below MODULE_DIR, making a hot update fail with EBUSY.
+        // Detach only that exact legacy source in the caller's namespace before replacing the
+        // already ownership-verified module. Existing APEX bind mounts retain their references.
+        appendLine("if grep -q ${quote(" $LEGACY_APEX_WORK_DIR ")} /proc/self/mountinfo 2>/dev/null; then")
+        appendLine("  umount ${quote(LEGACY_APEX_WORK_DIR)}")
+        appendLine("fi")
         appendLine("if [ -e ${quote(MODULE_DIR)} ]; then rm -rf ${quote(MODULE_DIR)}; fi")
         appendLine("mv ${quote(MODULE_STAGE_DIR)} ${quote(MODULE_DIR)}")
     }
 
-    private fun immediateInjectScript(): String = buildString {
-        appendLine("set -eu")
-        appendLine("if [ -x /system/bin/nsenter ]; then")
-        appendLine("  /system/bin/nsenter -t 1 -m -- /system/bin/sh ${quote("$MODULE_DIR/inject-apex.sh")}")
-        appendLine("else")
-        appendLine("  /system/bin/sh ${quote("$MODULE_DIR/inject-apex.sh")}")
-        appendLine("fi")
-    }
+    private fun immediateInjectScript(): String =
+        "set -eu\n" + renderNamespaceInjectCommands()
 
     private fun removeScript(): String = buildString {
         appendLine("set -eu")
@@ -619,6 +627,8 @@ class AndroidSystemCaInstaller(
         const val MODULE_DIR = "/data/adb/modules/$MODULE_ID"
         const val MODULE_STAGE_DIR = "/data/adb/modules/$MODULE_ID.staging"
         const val OWNERSHIP_MARKER = ".github-direct-owned"
+        private const val APEX_WORK_DIR = "/data/adb/github-direct-ca-apex"
+        private const val LEGACY_APEX_WORK_DIR = "$MODULE_DIR/.apex-cacerts"
         private const val STAGING_DIR_NAME = "github-direct-ca-module"
         private val ANDROID_CERT_NAME = Regex("^[0-9a-f]{8}\\.0$")
         private val USER_CA_ALIAS = Regex("^user:[0-9a-f]{8}\\.[0-9]+$")
@@ -705,8 +715,8 @@ class AndroidSystemCaInstaller(
         internal fun renderModuleProp(fingerprint: String): String = """
             id=$MODULE_ID
             name=GitHub-direct Per-Device CA
-            version=1.0
-            versionCode=1
+            version=1.1
+            versionCode=2
             author=GitHub-direct
             description=Per-device public CA only; fingerprint ${fingerprint.take(16)}
         """.trimIndent() + "\n"
@@ -719,7 +729,7 @@ class AndroidSystemCaInstaller(
                 MODDIR=${'$'}{0%/*}
                 CERT="${'$'}MODDIR/system/etc/security/cacerts/$certName"
                 APEX=/apex/com.android.conscrypt/cacerts
-                WORK="${'$'}MODDIR/.apex-cacerts"
+                WORK="$APEX_WORK_DIR"
                 [ -f "${'$'}CERT" ] || exit 1
                 [ -d "${'$'}APEX" ] || exit 0
                 if [ -f "${'$'}APEX/$certName" ] && cmp -s "${'$'}CERT" "${'$'}APEX/$certName"; then
@@ -744,34 +754,46 @@ class AndroidSystemCaInstaller(
             """.trimIndent() + "\n"
         }
 
-        internal fun renderPostFsDataScript(): String = """
-            #!/system/bin/sh
-            MODDIR=${'$'}{0%/*}
+        /** Inject the public CA view into PID 1 and both 32/64-bit Zygote namespaces. */
+        internal fun renderNamespaceInjectCommands(): String = """
+            injected=0
+            inject_namespace() {
+              target_pid="${'$'}1"
+              [ -r "/proc/${'$'}target_pid/ns/mnt" ] || return 0
+              if /system/bin/nsenter -t "${'$'}target_pid" -m -- /system/bin/sh "$MODULE_DIR/inject-apex.sh"; then
+                injected=1
+              fi
+              return 0
+            }
             if [ -x /system/bin/nsenter ]; then
-              /system/bin/nsenter -t 1 -m -- /system/bin/sh "${'$'}MODDIR/inject-apex.sh"
-            else
-              /system/bin/sh "${'$'}MODDIR/inject-apex.sh"
+              inject_namespace 1
+              for target_pid in ${'$'}(/system/bin/pidof zygote64 zygote 2>/dev/null || true); do
+                [ "${'$'}target_pid" = 1 ] || inject_namespace "${'$'}target_pid"
+              done
+            elif /system/bin/sh "$MODULE_DIR/inject-apex.sh"; then
+              injected=1
             fi
+            [ "${'$'}injected" = 1 ]
         """.trimIndent() + "\n"
 
-        internal fun renderServiceScript(): String = """
-            #!/system/bin/sh
-            MODDIR=${'$'}{0%/*}
-            i=0
-            while [ ! -d /apex/com.android.conscrypt/cacerts ] && [ "${'$'}i" -lt 60 ]; do
-              sleep 1
-              i=${'$'}((i + 1))
-            done
-            if [ -x /system/bin/nsenter ]; then
-              /system/bin/nsenter -t 1 -m -- /system/bin/sh "${'$'}MODDIR/inject-apex.sh"
-            else
-              /system/bin/sh "${'$'}MODDIR/inject-apex.sh"
-            fi
-        """.trimIndent() + "\n"
+        internal fun renderPostFsDataScript(): String =
+            "#!/system/bin/sh\nset -u\n" + renderNamespaceInjectCommands()
+
+        internal fun renderServiceScript(): String = buildString {
+            appendLine("#!/system/bin/sh")
+            appendLine("set -u")
+            appendLine("i=0")
+            appendLine("while [ ! -d /apex/com.android.conscrypt/cacerts ] && [ \"\$i\" -lt 60 ]; do")
+            appendLine("  sleep 1")
+            appendLine("  i=\$((i + 1))")
+            appendLine("done")
+            append(renderNamespaceInjectCommands())
+        }
 
         internal fun renderUninstallScript(): String = """
             #!/system/bin/sh
             # 当前 APEX bind mount 在本次启动周期保持不动；重启自然恢复原始只读 APEX。
+            rm -rf "$APEX_WORK_DIR" 2>/dev/null || true
             exit 0
         """.trimIndent() + "\n"
     }

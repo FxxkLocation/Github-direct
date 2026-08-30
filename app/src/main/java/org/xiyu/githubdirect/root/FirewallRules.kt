@@ -53,6 +53,8 @@ class FirewallRules(
     private val rejectIpv6Udp443: Boolean = false,
     /** 仅限当前安全快照中已启用 NAT64 平台域名的 AAAA；必须是精确 /128。 */
     private val nat64Ipv6FallbackDestinations: Set<String> = emptySet(),
+    /** 地区/策略敏感的严格 NAT64 路由优先占用有限的 IPv6 不可达表预算。 */
+    private val nat64Ipv6FallbackPriorityDestinations: Set<String> = emptySet(),
     /** ip6tables 不可用时，以 `ip -6 rule uidrange` 对 SELECTED scope 做 IPv4 回落。 */
     private val enableIpv6UidPolicyFallback: Boolean = false,
     val generation: Long = 0,
@@ -135,13 +137,20 @@ class FirewallRules(
             emptyList()
         }
         nat64FallbackCidrsV6 = if (nat64FallbackUids.isNotEmpty()) {
-            nat64Ipv6FallbackDestinations.asSequence()
+            val all = nat64Ipv6FallbackDestinations.asSequence()
                 .filter { it.endsWith("/128") && RouteSnapshotCodec.isRoutableCidr(it) }
                 .filter { cidr ->
                     IpAddresses.parseIpAddress(cidr.substringBefore('/'))?.size == 16
                 }
                 .distinct()
                 .sorted()
+                .toList()
+            val priority = nat64Ipv6FallbackPriorityDestinations.asSequence()
+                .filter(all::contains)
+                .distinct()
+                .sorted()
+                .toList()
+            (priority.asSequence() + all.asSequence().filterNot(priority::contains))
                 .take(MAX_IPV6_POLICY_DESTINATIONS)
                 .toList()
         } else {
@@ -486,6 +495,7 @@ class FirewallRules(
         rejectUdp443 = rejectUdp443,
         rejectIpv6Udp443 = rejectIpv6Udp443,
         nat64Ipv6FallbackDestinations = nat64Ipv6FallbackDestinations,
+        nat64Ipv6FallbackPriorityDestinations = nat64Ipv6FallbackPriorityDestinations,
         enableIpv6UidPolicyFallback = enableIpv6UidPolicyFallback,
         generation = generation,
     )

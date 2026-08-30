@@ -261,13 +261,21 @@
                          "priority":  0,
                          "verifyStatus":  "NEEDS_VERIFY",
                          "aaaaSuppress":  false,
+                         "tlsFrontSni":  "g.cn",
+                         "tlsFrontSniNat64Egress":  {
+                                                           "prefix":  "2a01:4f9:c010:3f02:64:0:0:0/96",
+                                                           "operator":  "nat64.net-Helsinki",
+                                                           "expectedAsn":  "AS24940",
+                                                           "expectedRegion":  "FI/HEL"
+                                                       },
+                         "nat64FallbackEligible":  true,
                          "idleTimeoutSec":  60,
                          "cidr":  null,
                          "testEndpoints":  [
                                                "youtube.com",
                                                "googlevideo.com"
                                            ],
-                         "notes":  "依据 Google 官方 Chrome/Workspace 主机名建议维护，并为网页、Innertube API、图片及 googlevideo 流媒体加入精确入口；保留 IPv6。google-edge 池只在显式 candidatePoolScope 内共享已验证 IP 种子，跨端点组时只允许带 HTTP 语义探测的锚点输出种子。所有精确域及动态后缀连接仍按真实 SNI、系统信任链和主机名独立验证，不继承其他域的验证结论。Android YouTube/Cronet 实际播放、分片续传与双栈切换仍待实机，故 NEEDS_VERIFY。",
+                         "notes":  "依据 Google 官方 Chrome/Workspace 主机名建议维护，并为网页、Innertube API、图片及 googlevideo 流媒体加入精确入口；保留 IPv6。google-edge 池只在显式 candidatePoolScope 内共享已验证 IP 种子，跨端点组时只允许带 HTTP 语义探测的锚点输出种子。用户显式启用第三方 NAT64 风险开关后，规则级出口必须实时通过 ASN/地区探测；Google/YouTube 使用独立 Helsinki 出口，OpenAI 可使用用户配置的地区策略出口。平台自有前置 SNI、动态上游解析及原始 Host/SNI matcher 边界保持不变，不维护固定 Google IP。Android YouTube/Cronet 实际播放已完成实机验证，长时分片续传仍为 NEEDS_VERIFY。",
                          "providers":  [
 
                                        ],
@@ -305,6 +313,9 @@
                                              "match":  { "type":  "EXACT", "value":  "redirector.googlevideo.com" },
                                              "transport":  "CLEAN_DNS",
                                              "resolver":  "PROVIDER_FIRST",
+                                             "tlsFrontSni":  "xn--ngstr-lra8j.com",
+                                             "tlsFrontSniReflectUpstream":  true,
+                                             "tlsFrontSniProbeDomain":  "redirector.googlevideo.com",
                                              "aaaaSuppress":  false,
                                              "endpointGroup":  "youtube-stream",
                                              "candidatePool":  "google-edge",
@@ -388,6 +399,9 @@
                                                        },
                                              "transport":  "CLEAN_DNS",
                                              "resolver":  "DOH",
+                                             "tlsFrontSni":  "xn--ngstr-lra8j.com",
+                                             "tlsFrontSniReflectUpstream":  true,
+                                             "tlsFrontSniProbeDomain":  "redirector.googlevideo.com",
                                              "aaaaSuppress":  false,
                                              "fragmentTls":  null,
                                              "fixedIp":  null,
@@ -404,13 +418,21 @@
                          "priority":  0,
                          "verifyStatus":  "NEEDS_VERIFY",
                          "aaaaSuppress":  false,
+                         "tlsFrontSni":  "g.cn",
+                         "tlsFrontSniNat64Egress":  {
+                                                           "prefix":  "2a01:4f9:c010:3f02:64:0:0:0/96",
+                                                           "operator":  "nat64.net-Helsinki",
+                                                           "expectedAsn":  "AS24940",
+                                                           "expectedRegion":  "FI/HEL"
+                                                       },
+                         "nat64FallbackEligible":  true,
                          "idleTimeoutSec":  60,
                          "cidr":  null,
                          "testEndpoints":  [
                                                "google.com",
                                                "gstatic.com"
                                            ],
-                         "notes":  "依据 Google 官方 Chrome/Workspace 主机名清单维护，含账户、API、静态资源、reCAPTCHA、1e100 与 gvt 下载域；保留 IPv6。Google 公布的地址集合持续变化且与 Google Cloud 范围重叠，本阶段不把宽 CIDR 整体接入防火墙。google-edge 池只在显式 candidatePoolScope 内共享已验证 IP 种子，每个目标域必须以真实 SNI、系统信任链和主机名重新验证后才能发布。不会使用 g.cn 伪 SNI。当前设备尚未完成 Google App/Play 全链路，故 NEEDS_VERIFY。",
+                         "notes":  "依据 Google 官方 Chrome/Workspace 主机名清单维护，含账户、API、静态资源、reCAPTCHA、1e100 与 gvt 下载域；保留 IPv6。Google 公布的地址集合持续变化且与 Google Cloud 范围重叠，不把宽 CIDR 整体接入防火墙。google-edge 池只在显式 candidatePoolScope 内共享已验证 IP 种子。用户显式启用第三方 NAT64 风险开关后，规则级 Helsinki 出口必须实时通过 ASN/地区探测；平台自有 g.cn 前置 SNI 与逐主机动态解析保持不变，传输层不维护固定 Google IP。Google 网页、账户 OAuth 与 YouTube 登录已完成实机验证，Google App/Play 全链路仍为 NEEDS_VERIFY。",
                          "providers":  [
 
                                        ],

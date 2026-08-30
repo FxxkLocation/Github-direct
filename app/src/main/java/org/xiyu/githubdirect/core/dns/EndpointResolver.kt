@@ -132,15 +132,25 @@ class EndpointResolver(
         val v6 = AtomicReference<List<ByteArray>?>(null)
         val latch = CountDownLatch(2)
         fun launch(qtype: Int, target: AtomicReference<List<ByteArray>?>) {
-            Thread({
+            val task = Runnable {
                 try {
                     val remaining = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime())
                         .toInt().coerceAtLeast(1)
                     target.set(queryWireType(domain, qtype, cidr, remaining))
+                } catch (_: Throwable) {
+                    // 解析失败保持 null；线程资源压力不能穿透到前台服务主进程。
                 } finally {
                     latch.countDown()
                 }
-            }, "GHD-Wire-$qtype").apply { isDaemon = true; start() }
+            }
+            try {
+                Thread(null, task, "GHD-Wire-$qtype", WIRE_THREAD_STACK_BYTES).apply {
+                    isDaemon = true
+                    start()
+                }
+            } catch (_: Throwable) {
+                latch.countDown()
+            }
         }
         launch(1, v4)
         launch(28, v6)
@@ -163,15 +173,25 @@ class EndpointResolver(
         val v6 = AtomicReference<TypeDiscovery?>(null)
         val latch = CountDownLatch(2)
         fun launch(qtype: Int, target: AtomicReference<TypeDiscovery?>) {
-            Thread({
+            val task = Runnable {
                 try {
                     val remaining = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime())
                         .toInt().coerceAtLeast(1)
                     target.set(queryWireDiscoveryType(domain, qtype, cidr, remaining))
+                } catch (_: Throwable) {
+                    // fail-close：该 qtype 本轮无可信发现结果。
                 } finally {
                     latch.countDown()
                 }
-            }, "GHD-Wire-Discover-$qtype").apply { isDaemon = true; start() }
+            }
+            try {
+                Thread(null, task, "GHD-Wire-Discover-$qtype", WIRE_THREAD_STACK_BYTES).apply {
+                    isDaemon = true
+                    start()
+                }
+            } catch (_: Throwable) {
+                latch.countDown()
+            }
         }
         launch(1, v4)
         launch(28, v6)
@@ -272,5 +292,10 @@ class EndpointResolver(
             trustedResponseObserved = trustedResponseObserved,
             observerResponseObserved = observerResponseObserved,
         )
+    }
+
+    companion object {
+        /** Android 默认线程栈约 4 MiB；发现任务调用深度有限，512 KiB 足够并显著降低峰值。 */
+        private const val WIRE_THREAD_STACK_BYTES = 512L * 1024L
     }
 }

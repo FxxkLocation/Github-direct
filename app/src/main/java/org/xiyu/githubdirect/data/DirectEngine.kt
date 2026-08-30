@@ -2,6 +2,7 @@ package org.xiyu.githubdirect.data
 
 import android.content.Context
 import android.util.Log
+import org.xiyu.githubdirect.core.data.Nat64FallbackActivation
 import org.xiyu.githubdirect.core.data.SettingsStore
 import org.xiyu.githubdirect.core.dns.EndpointCache
 import org.xiyu.githubdirect.core.dns.EndpointResolver
@@ -17,6 +18,7 @@ import org.xiyu.githubdirect.core.rules.MatcherIndex
 import org.xiyu.githubdirect.core.rules.RuleRegistry
 import org.xiyu.githubdirect.core.rules.ServiceProfile
 import org.xiyu.githubdirect.core.rules.DnsNames
+import org.xiyu.githubdirect.core.rules.DomainRule
 import org.xiyu.githubdirect.core.rules.ExactMatcher
 import org.xiyu.githubdirect.core.rules.SuffixMatcher
 import org.xiyu.githubdirect.core.rules.TransportPolicy
@@ -424,6 +426,123 @@ object DirectEngine {
                 }?.let(DnsNames::normalize) ?: return@forEach
                 if (isRelayTransport(reg.match(domain)?.policy?.transport)) {
                     result.putIfAbsent(domain, echDomain)
+                }
+            }
+        return result
+    }
+
+    /**
+     * 当前规则资产显式声明的平台前置 SNI。这里只发布 matcher 的根边界与平台自有
+     * 前置名；固定上游地址和 NAT64 合成地址仍由当前 RouteSnapshot 在运行时选择、
+     * 端到端预检。没有单独 NAT64 资格的规则不会进入该非严格路径。
+     */
+    @JvmStatic
+    fun enabledTlsFrontSniDomains(): Map<String, String> {
+        val reg = registry ?: return emptyMap()
+        val result = LinkedHashMap<String, String>()
+        profiles.values.asSequence()
+            .filter { reg.isEnabled(it.id) }
+            .flatMap(ServiceProfile::domains)
+            .filter(DomainRule::nat64FallbackEligible)
+            .forEach { rule ->
+                val frontSni = rule.tlsFrontSni?.let(DnsNames::normalize) ?: return@forEach
+                val domain = when (val matcher = rule.matcher) {
+                    is ExactMatcher -> matcher.domain
+                    is SuffixMatcher -> matcher.suffix.removePrefix(".")
+                    else -> null
+                }?.let(DnsNames::normalize) ?: return@forEach
+                if (isRelayTransport(reg.match(domain)?.policy?.transport)) {
+                    result.putIfAbsent(domain, frontSni)
+                }
+            }
+        return result
+    }
+
+    /**
+     * 需要逐连接反射真实拨号主机的前置 SNI 路由。该集合仍受已启用 profile、显式
+     * NAT64 资格和最终 matcher 约束，不能由运行时观测到的任意 SNI 扩张。
+     */
+    @JvmStatic
+    fun enabledTlsFrontSniReflectUpstreamDomains(): Set<String> {
+        val reg = registry ?: return emptySet()
+        return profiles.values.asSequence()
+            .filter { reg.isEnabled(it.id) }
+            .flatMap(ServiceProfile::domains)
+            .filter {
+                it.nat64FallbackEligible &&
+                    it.tlsFrontSni != null &&
+                    it.tlsFrontSniReflectUpstream
+            }
+            .mapNotNull { rule ->
+                when (val matcher = rule.matcher) {
+                    is ExactMatcher -> matcher.domain
+                    is SuffixMatcher -> matcher.suffix.removePrefix(".")
+                    else -> null
+                }
+            }
+            .mapNotNull(DnsNames::normalize)
+            .filter { domain -> isRelayTransport(reg.match(domain)?.policy?.transport) }
+            .toCollection(LinkedHashSet())
+    }
+
+    /** 反射上游路由发布前使用的稳定代表主机；代表名必须仍落在 matcher 边界内。 */
+    @JvmStatic
+    fun enabledTlsFrontSniProbeDomains(): Map<String, String> {
+        val reg = registry ?: return emptyMap()
+        val result = LinkedHashMap<String, String>()
+        profiles.values.asSequence()
+            .filter { reg.isEnabled(it.id) }
+            .flatMap(ServiceProfile::domains)
+            .filter {
+                it.nat64FallbackEligible &&
+                    it.tlsFrontSni != null &&
+                    it.tlsFrontSniReflectUpstream
+            }
+            .forEach { rule ->
+                val domain = when (val matcher = rule.matcher) {
+                    is ExactMatcher -> matcher.domain
+                    is SuffixMatcher -> matcher.suffix.removePrefix(".")
+                    else -> null
+                }?.let(DnsNames::normalize) ?: return@forEach
+                val probe = rule.tlsFrontSniProbeDomain?.let(DnsNames::normalize)
+                    ?: return@forEach
+                val insideBoundary = when (rule.matcher) {
+                    is ExactMatcher -> probe == domain
+                    is SuffixMatcher -> probe == domain || probe.endsWith(".$domain")
+                    else -> false
+                }
+                if (insideBoundary && isRelayTransport(reg.match(domain)?.policy?.transport)) {
+                    result.putIfAbsent(domain, probe)
+                }
+            }
+        return result
+    }
+
+    /**
+     * 规则级前置 SNI 出口选择。域名边界仍完全来自启用后的 matcher；这里仅把已经由
+     * RuleCatalog 严格校验的出口元数据关联到该边界，运行时还必须逐出口实测后才使用。
+     */
+    @JvmStatic
+    fun enabledTlsFrontSniNat64Egresses(): Map<String, Nat64FallbackActivation> {
+        val reg = registry ?: return emptyMap()
+        val result = LinkedHashMap<String, Nat64FallbackActivation>()
+        profiles.values.asSequence()
+            .filter { reg.isEnabled(it.id) }
+            .flatMap(ServiceProfile::domains)
+            .filter {
+                it.nat64FallbackEligible &&
+                    it.tlsFrontSni != null &&
+                    it.tlsFrontSniNat64Egress != null
+            }
+            .forEach { rule ->
+                val domain = when (val matcher = rule.matcher) {
+                    is ExactMatcher -> matcher.domain
+                    is SuffixMatcher -> matcher.suffix.removePrefix(".")
+                    else -> null
+                }?.let(DnsNames::normalize) ?: return@forEach
+                val egress = rule.tlsFrontSniNat64Egress ?: return@forEach
+                if (isRelayTransport(reg.match(domain)?.policy?.transport)) {
+                    result.putIfAbsent(domain, egress)
                 }
             }
         return result

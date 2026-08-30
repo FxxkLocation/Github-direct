@@ -26,8 +26,10 @@ class AndroidSystemCaInstallerTest {
         val service = AndroidSystemCaInstaller.renderServiceScript()
         val prop = AndroidSystemCaInstaller.renderModuleProp("a".repeat(64))
 
-        assertTrue(postFs.contains("nsenter -t 1 -m"))
-        assertTrue(service.contains("nsenter -t 1 -m"))
+        assertTrue(postFs.contains("nsenter -t"))
+        assertTrue(postFs.contains("pidof zygote64 zygote"))
+        assertTrue(service.contains("nsenter -t"))
+        assertTrue(service.contains("pidof zygote64 zygote"))
         assertTrue(prop.contains("id=github_direct_ca"))
         assertFalse(prop.contains("PRIVATE KEY"))
     }
