@@ -118,13 +118,13 @@ class RootFailOpenGuardianTest {
         assertTrue(
             guardian.start(
                 listOf(
-                    "ip -6 rule del table 52123",
+                    "ip -6 rule del priority 10500 table 52123",
                     "ip -6 route flush table 52123",
                 ),
             ),
         )
         val launch = executor.scripts.single()
-        assertTrue(launch.contains("ip -6 rule del table 52123"))
+        assertTrue(launch.contains("ip -6 rule del priority 10500 table 52123"))
         assertTrue(launch.contains("ip -6 route flush table 52123"))
 
         val rejected = RootFailOpenGuardian(
